@@ -1,5 +1,4 @@
 using System.Xml.Linq;
-using KuaKeDriveWebDav.Quark;
 using Microsoft.AspNetCore.StaticFiles;
 
 namespace KuaKeDriveWebDav.WebDav;
@@ -8,42 +7,86 @@ namespace KuaKeDriveWebDav.WebDav;
 #pragma warning disable CS9113
 
 /// <summary>
-/// WebDAV 终端中间件：分发 OPTIONS / PROPFIND / GET / HEAD（只读）
+/// WebDAV 终端中间件：分发 OPTIONS / PROPFIND / GET / HEAD（只读）以及本地存储的写方法
 /// </summary>
-public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
+public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolver)
 {
-    private const string AllowedMethods = "OPTIONS, PROPFIND, GET, HEAD";
+    private const string ReadMethods = "OPTIONS, PROPFIND, GET, HEAD";
+    private const string WriteMethods = "PUT, MKCOL, DELETE, MOVE, COPY";
 
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
 
-    /// <summary>中间件入口：按 HTTP 方法分发只读请求，未支持的方法返回 405</summary>
+    /// <summary>中间件入口：按 HTTP 方法分发，未支持的方法返回 405</summary>
     public async Task InvokeAsync(HttpContext context)
     {
+        var store = resolver.Resolve(context);
+        if (store is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        var method = context.Request.Method.ToUpperInvariant();
+        var canWrite = store.Capabilities.HasFlag(WebDavCapabilities.Write);
+        if (!canWrite && method is "PUT" or "MKCOL" or "DELETE" or "MOVE" or "COPY")
+        {
+            context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+            context.Response.Headers.Allow = BuildAllow(store);
+            return;
+        }
+
         try
         {
-            switch (context.Request.Method.ToUpperInvariant())
+            switch (method)
             {
                 case "OPTIONS":
-                    await HandleOptionsAsync(context);
+                    HandleOptions(context, store);
                     return;
                 case "PROPFIND":
-                    await HandlePropfindAsync(context);
+                    await HandlePropfindAsync(context, store);
                     return;
                 case "HEAD":
-                    await HandleHeadAsync(context);
+                    await HandleHeadAsync(context, store);
                     return;
                 case "GET":
-                    await HandleGetAsync(context);
+                    await HandleGetAsync(context, store);
+                    return;
+                case "PUT":
+                    await HandlePutAsync(context, store);
+                    return;
+                case "MKCOL":
+                    await HandleMkcolAsync(context, store);
+                    return;
+                case "DELETE":
+                    await HandleDeleteAsync(context, store);
+                    return;
+                case "MOVE":
+                    await HandleMoveAsync(context, store);
+                    return;
+                case "COPY":
+                    await HandleCopyAsync(context, store);
                     return;
                 default:
                     context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
-                    context.Response.Headers.Allow = AllowedMethods;
+                    context.Response.Headers.Allow = BuildAllow(store);
                     return;
             }
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            await WriteErrorAsync(context, StatusCodes.Status409Conflict, ex.Message);
+        }
+        catch (FileNotFoundException ex)
+        {
+            await WriteErrorAsync(context, StatusCodes.Status404NotFound, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await WriteErrorAsync(context, StatusCodes.Status409Conflict, ex.Message);
         }
         catch (Exception ex)
         {
@@ -52,21 +95,20 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
     }
 
     /// <summary>响应 OPTIONS 能力探测，声明允许的方法与 DAV 等级</summary>
-    private static Task HandleOptionsAsync(HttpContext context)
+    private static void HandleOptions(HttpContext context, IWebDavStore store)
     {
         context.Response.StatusCode = StatusCodes.Status200OK;
-        context.Response.Headers.Allow = AllowedMethods;
+        context.Response.Headers.Allow = BuildAllow(store);
         context.Response.Headers["DAV"] = "1, 2";
         context.Response.Headers["MS-Author-Via"] = "DAV";
-        return Task.CompletedTask;
     }
 
     /// <summary>处理 PROPFIND：返回当前路径及其子节点的 multistatus 属性</summary>
-    private async Task HandlePropfindAsync(HttpContext context)
+    private async Task HandlePropfindAsync(HttpContext context, IWebDavStore store)
     {
         var ct = context.RequestAborted;
         var path = context.Request.Path.Value ?? "/";
-        var node = await quark.GetByPathAsync(path, ct);
+        var node = await store.GetByPathAsync(path, ct);
         if (node is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -80,11 +122,11 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         var hrefBase = (context.Request.PathBase.Value ?? "") + path;
         var hrefWithSlash = EnsureTrailingSlash(hrefBase);
 
-        var responses = new List<MultistatusResponse> { ToResponse(hrefBase, node) };
+        var responses = new List<MultistatusResponse> { ToResponse(store, hrefBase, node) };
         if (includeChildren)
         {
-            foreach (var child in await quark.ListChildrenAsync(node.Fid, ct))
-                responses.Add(ToResponse(hrefWithSlash + child.FileName, child));
+            foreach (var child in await store.ListChildrenAsync(node, ct))
+                responses.Add(ToResponse(store, hrefWithSlash + child.Name, child));
         }
 
         context.Response.StatusCode = StatusCodes.Status207MultiStatus;
@@ -93,9 +135,9 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
     }
 
     /// <summary>处理 HEAD：返回文件元信息头，不输出正文</summary>
-    private async Task HandleHeadAsync(HttpContext context)
+    private async Task HandleHeadAsync(HttpContext context, IWebDavStore store)
     {
-        var node = await quark.GetByPathAsync(context.Request.Path.Value ?? "/", context.RequestAborted);
+        var node = await store.GetByPathAsync(context.Request.Path.Value ?? "/", context.RequestAborted);
         if (node is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -105,17 +147,17 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         if (node.IsDirectory)
             return;
         context.Response.ContentLength = node.Size;
-        context.Response.ContentType = GuessContentType(node.FileName);
+        context.Response.ContentType = GuessContentType(node.Name);
         context.Response.Headers.LastModified = WebDavMultistatus.FormatRfc1123(node.UpdatedAt);
         context.Response.Headers.AcceptRanges = "bytes";
-        context.Response.Headers.ETag = MakeEtag(node);
+        context.Response.Headers.ETag = store.GetEtag(node);
     }
 
-    /// <summary>处理 GET：获取下载直链并流式回传文件内容，支持 Range 断点续传</summary>
-    private async Task HandleGetAsync(HttpContext context)
+    /// <summary>处理 GET：打开数据源读取流并透传，支持 Range 断点续传</summary>
+    private async Task HandleGetAsync(HttpContext context, IWebDavStore store)
     {
         var ct = context.RequestAborted;
-        var node = await quark.GetByPathAsync(context.Request.Path.Value ?? "/", ct);
+        var node = await store.GetByPathAsync(context.Request.Path.Value ?? "/", ct);
         if (node is null || node.IsDirectory)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -123,50 +165,110 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         }
 
         var range = context.Request.Headers.Range.ToString();
-
-        // 直链可能过期失效，失败时重新获取一次再下载
-        async Task<HttpResponseMessage> OpenFreshAsync() =>
-            await quark.OpenDownloadAsync(await quark.GetDownloadUrlAsync(node.Fid, ct), range, ct);
-
-        HttpResponseMessage upstream;
-        try
-        {
-            upstream = await OpenFreshAsync();
-        }
-        catch (HttpRequestException)
-        {
-            upstream = await OpenFreshAsync();
-        }
-
-        using (upstream)
-        {
-            context.Response.StatusCode = (int)upstream.StatusCode;
-            context.Response.ContentType =
-                upstream.Content.Headers.ContentType?.ToString() ?? GuessContentType(node.FileName);
-            if (upstream.Content.Headers.ContentLength is not null)
-                context.Response.ContentLength = upstream.Content.Headers.ContentLength;
-            if (upstream.Content.Headers.ContentRange is not null)
-                context.Response.Headers.ContentRange = upstream.Content.Headers.ContentRange.ToString();
-            context.Response.Headers.AcceptRanges = "bytes";
-            await upstream.Content.CopyToAsync(context.Response.Body, ct);
-        }
+        await using var content = await store.OpenReadAsync(node, string.IsNullOrEmpty(range) ? null : range, ct);
+        context.Response.StatusCode = content.StatusCode;
+        context.Response.ContentType = content.ContentType ?? GuessContentType(node.Name);
+        if (content.ContentLength is not null)
+            context.Response.ContentLength = content.ContentLength;
+        if (content.ContentRange is not null)
+            context.Response.Headers.ContentRange = content.ContentRange;
+        context.Response.Headers.AcceptRanges = "bytes";
+        await content.Stream.CopyToAsync(context.Response.Body, ct);
     }
 
-    /// <summary>将夸克文件节点转换为 WebDAV multistatus 响应项</summary>
-    private static MultistatusResponse ToResponse(string href, QuarkFile file)
+    /// <summary>处理 PUT：上传/覆盖文件，统一返回 200</summary>
+    private async Task HandlePutAsync(HttpContext context, IWebDavStore store)
     {
-        var isDir = !file.IsFile;
-        var normalized = isDir && !href.EndsWith('/') ? href + "/" : href;
+        var path = context.Request.Path.Value ?? "/";
+        await store.PutAsync(path, context.Request.Body, context.RequestAborted);
+        context.Response.StatusCode = StatusCodes.Status200OK;
+    }
+
+    /// <summary>处理 MKCOL：创建目录，成功返回 201</summary>
+    private async Task HandleMkcolAsync(HttpContext context, IWebDavStore store)
+    {
+        var path = context.Request.Path.Value ?? "/";
+        await store.MkcolAsync(path, context.RequestAborted);
+        context.Response.StatusCode = StatusCodes.Status201Created;
+    }
+
+    /// <summary>处理 DELETE：删除资源，成功 204，不存在 404</summary>
+    private async Task HandleDeleteAsync(HttpContext context, IWebDavStore store)
+    {
+        var path = context.Request.Path.Value ?? "/";
+        var ok = await store.DeleteAsync(path, context.RequestAborted);
+        context.Response.StatusCode = ok ? StatusCodes.Status204NoContent : StatusCodes.Status404NotFound;
+    }
+
+    /// <summary>处理 MOVE：在同一 store 内移动，目标前缀不符返回 400</summary>
+    private async Task HandleMoveAsync(HttpContext context, IWebDavStore store)
+    {
+        var (sourcePath, destPath, overwrite) = ParseSourceDest(context);
+        if (destPath is null)
+        {
+            await WriteErrorAsync(context, StatusCodes.Status400BadRequest, "缺少或非法的 Destination 头");
+            return;
+        }
+        await store.MoveAsync(sourcePath, destPath, overwrite, context.RequestAborted);
+        context.Response.StatusCode = overwrite ? StatusCodes.Status204NoContent : StatusCodes.Status201Created;
+    }
+
+    /// <summary>处理 COPY：在同一 store 内复制，目标前缀不符返回 400</summary>
+    private async Task HandleCopyAsync(HttpContext context, IWebDavStore store)
+    {
+        var (sourcePath, destPath, overwrite) = ParseSourceDest(context);
+        if (destPath is null)
+        {
+            await WriteErrorAsync(context, StatusCodes.Status400BadRequest, "缺少或非法的 Destination 头");
+            return;
+        }
+        await store.CopyAsync(sourcePath, destPath, overwrite, context.RequestAborted);
+        context.Response.StatusCode = overwrite ? StatusCodes.Status204NoContent : StatusCodes.Status201Created;
+    }
+
+    /// <summary>解析 MOVE/COPY 的源路径、目标路径（须同属当前 store 前缀）与 Overwrite 头</summary>
+    private (string SourcePath, string? DestPath, bool Overwrite) ParseSourceDest(HttpContext context)
+    {
+        var sourcePath = context.Request.Path.Value ?? "/";
+        var destination = context.Request.Headers["Destination"].ToString();
+        if (string.IsNullOrEmpty(destination))
+            return (sourcePath, null, Overwrite: false);
+
+        var destUri = new Uri(destination, UriKind.RelativeOrAbsolute);
+        var absolutePath = destUri.IsAbsoluteUri ? destUri.AbsolutePath : destUri.ToString();
+        var pathBase = context.Request.PathBase.Value ?? "";
+        if (!absolutePath.StartsWith(pathBase, StringComparison.OrdinalIgnoreCase))
+            return (sourcePath, null, Overwrite: false);
+
+        var overwrite = !string.Equals(
+            context.Request.Headers["Overwrite"].ToString(),
+            "F",
+            StringComparison.OrdinalIgnoreCase
+        );
+        var destPath = absolutePath[pathBase.Length..];
+        if (!destPath.StartsWith('/'))
+            destPath = "/" + destPath;
+        return (sourcePath, destPath, overwrite);
+    }
+
+    /// <summary>按数据源能力拼接 Allow 头</summary>
+    private static string BuildAllow(IWebDavStore store) =>
+        store.Capabilities.HasFlag(WebDavCapabilities.Write) ? $"{ReadMethods}, {WriteMethods}" : ReadMethods;
+
+    /// <summary>将数据源节点转换为 WebDAV multistatus 响应项</summary>
+    private static MultistatusResponse ToResponse(IWebDavStore store, string href, WebDavNode node)
+    {
+        var normalized = node.IsDirectory && !href.EndsWith('/') ? href + "/" : href;
         return new MultistatusResponse
         {
             Href = EncodePath(normalized),
-            Name = file.FileName,
-            IsDirectory = isDir,
-            Size = file.Size,
-            UpdatedAt = file.UpdatedAt,
-            CreatedAt = file.CreatedAt,
-            ContentType = GuessContentType(file.FileName),
-            Etag = MakeEtag(file),
+            Name = node.Name,
+            IsDirectory = node.IsDirectory,
+            Size = node.Size,
+            UpdatedAt = node.UpdatedAt,
+            CreatedAt = node.CreatedAt,
+            ContentType = GuessContentType(node.Name),
+            Etag = store.GetEtag(node),
         };
     }
 
@@ -212,9 +314,6 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
             contentType = "application/octet-stream";
         return contentType;
     }
-
-    /// <summary>由文件 fid、大小、更新时间生成 ETag</summary>
-    private static string MakeEtag(QuarkFile file) => $"\"{file.Fid}-{file.Size}-{file.UpdatedAt}\"";
 
     /// <summary>以纯文本写出错误响应</summary>
     private static Task WriteErrorAsync(HttpContext context, int statusCode, string message)

@@ -14,6 +14,7 @@ await HostApp.StartWebAppAsync(
         // 强类型配置
         builder.Services.Configure<QuarkOptions>(builder.Configuration.GetSection("Quark"));
         builder.Services.Configure<WebDavOptions>(builder.Configuration.GetSection("WebDav"));
+        builder.Services.Configure<LocalOptions>(builder.Configuration.GetSection("Local"));
 
         // Http 客户端（调用夸克接口）+ 内存缓存（缓存目录列表）
         builder.Services.AddHttpService();
@@ -29,7 +30,7 @@ await HostApp.StartWebAppAsync(
     },
     async app =>
     {
-        var prefix = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value.Prefix.TrimEnd('/');
+        var opt = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value;
 
         // Cookie 更新接口：独立分支，复用 WebDAV 的 Basic Auth 认证
         app.Map(
@@ -41,6 +42,7 @@ await HostApp.StartWebAppAsync(
             }
         );
 
+        // 两个 WebDAV 路由各自绑定不同数据源：/dav/kuake（夸克只读）、/dav/local（本地可读写）
         // ReSharper disable once MoveLocalFunctionAfterJumpStatement
         void ConfigureWebDav(IApplicationBuilder dav)
         {
@@ -48,12 +50,8 @@ await HostApp.StartWebAppAsync(
             dav.UseMiddleware<WebDavMiddleware>();
         }
 
-        // 根路径（/ 或空）下 app.Map 不支持以 / 结尾的路径，改为终端中间件接管全部请求；
-        // 否则挂在 Prefix 分支
-        if (prefix.Length == 0)
-            ConfigureWebDav(app);
-        else
-            app.Map(prefix, ConfigureWebDav);
+        app.Map(opt.QuarkPrefix.TrimEnd('/'), ConfigureWebDav);
+        app.Map(opt.LocalPrefix.TrimEnd('/'), ConfigureWebDav);
 
         await Task.CompletedTask;
     }

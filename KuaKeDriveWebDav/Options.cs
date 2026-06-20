@@ -20,12 +20,24 @@ public class QuarkOptions
 /// </summary>
 public class WebDavOptions
 {
-    /// <summary>WebDAV 路径前缀</summary>
-    public string Prefix { get; set; } = "/dav";
+    /// <summary>夸克网盘路由前缀，默认 /dav/kuake</summary>
+    public string QuarkPrefix { get; set; } = "/dav/kuake";
 
-    /// <summary>Basic Auth 用户名</summary>
+    /// <summary>本地存储路由前缀，默认 /dav/local</summary>
+    public string LocalPrefix { get; set; } = "/dav/local";
+
+    /// <summary>Basic Auth 用户名（两组路由共用）</summary>
     public string Username { get; set; } = string.Empty;
 
-    /// <summary>Basic Auth 密码</summary>
+    /// <summary>Basic Auth 密码（两组路由共用）</summary>
     public string Password { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 本地存储相关配置（对应 appsettings.json 的 Local 节）
+/// </summary>
+public class LocalOptions
+{
+    /// <summary>本地存储根目录（绝对路径，或相对当前工作目录）</summary>
+    public string RootPath { get; set; } = "local-root";
 }
