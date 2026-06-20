@@ -16,10 +16,16 @@ public interface IQuarkClient
     Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default);
 
     /// <summary>
-    /// 以流方式打开文件下载（带 Cookie/Referer/UA，透传 Range）：内部按 fid 取直链并缓存，
-    /// 直链失效时自动清缓存重取一次。返回上游响应（调用方负责释放）
+    /// 以流方式打开文件下载（带 Cookie/Referer/UA，支持 Range）：内部按 fid 取直链并缓存。
+    /// 大文件按 DownloadPartSize 切片、DownloadConcurrency 路并发拉取后按序拼合，绕开夸克单连接限速；
+    /// 小文件或未开启并发时回退单流。直链失效时自动清缓存重取一次。返回上游响应（调用方负责释放）
     /// </summary>
-    Task<HttpResponseMessage> OpenDownloadAsync(string fid, string? rangeHeader, CancellationToken ct = default);
+    Task<HttpResponseMessage> OpenDownloadAsync(
+        string fid,
+        long totalSize,
+        string? rangeHeader,
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// 用传入的 cookie 字符串整体替换当前登录态并持久化，随后调用一次列目录验证有效性；

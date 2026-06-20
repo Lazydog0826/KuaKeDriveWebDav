@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
@@ -23,6 +24,11 @@ public class QuarkClient : IQuarkClient
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
         + "quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 "
         + "Safari/537.36 Channel/pckk_other_ch";
+
+    // 夸克对单连接下载大文件强制限速（约 100KB/s，会员亦然），需多连接并发突破；
+    // 采用 OpenList 夸克驱动实测值：3 路并发、单片 10MB（AList issue #4175 切片 8~18MB 区间最优）。
+    private const int DownloadConcurrency = 3;
+    private const int DownloadPartSize = 10 * 1024 * 1024;
 
     private readonly IHttpService _httpService;
     private readonly ICacheService _cacheService;
@@ -87,19 +93,81 @@ public class QuarkClient : IQuarkClient
     /// <inheritdoc />
     public async Task<HttpResponseMessage> OpenDownloadAsync(
         string fid,
+        long totalSize,
         string? rangeHeader,
         CancellationToken ct = default
     )
     {
-        // 直链可能过期失效，失败时清缓存重取一次再下载
+        var (start, length, hasRange) = ParseRange(rangeHeader, totalSize);
+
+        // 范围不超过单片或未开启并发：走单流；否则多片并发。
+        // 多片把整段范围按 PartSize 切片、Concurrency 路并发拉取后按序拼合，用多条上游连接
+        // 绕开夸克对单连接大文件的限速（参考 OpenList 夸克驱动 3 并发 × 10MB）
+        long? rangeStart = hasRange ? start : null;
+        long? rangeEnd = hasRange ? start + length - 1 : null;
+        if (length <= DownloadPartSize || DownloadConcurrency <= 1)
+            return await DownloadWithRetryAsync(
+                fid,
+                (url, token) => OpenDownloadByUrlAsync(url, rangeStart, rangeEnd, token),
+                ct
+            );
+
+        var stream = new QuarkParallelDownloadStream(
+            (s, l, token) =>
+                DownloadWithRetryAsync(fid, (url, t) => OpenDownloadByUrlAsync(url, s, s + l - 1, t), token),
+            start,
+            length,
+            DownloadPartSize,
+            DownloadConcurrency,
+            ct
+        );
+        return BuildRangeResponse(stream, start, length, totalSize, hasRange);
+    }
+
+    /// <summary>
+    /// 解析 Range 头为（起始偏移、长度、是否带 Range）；无 Range 或解析失败按整文件处理
+    /// </summary>
+    private static (long Start, long Length, bool HasRange) ParseRange(string? rangeHeader, long totalSize)
+    {
+        if (
+            string.IsNullOrEmpty(rangeHeader)
+            || !RangeHeaderValue.TryParse(rangeHeader, out var parsed)
+            || parsed.Ranges.Count == 0
+        )
+            return (0, totalSize, false);
+
+        var r = parsed.Ranges.First();
+        if (r.From is not null && r.To is not null)
+            return (r.From.Value, r.To.Value - r.From.Value + 1, true);
+        if (r.From is not null)
+            return (r.From.Value, totalSize - r.From.Value, true);
+        if (r.To is not null)
+        {
+            var len = Math.Min(r.To.Value, totalSize);
+            return (totalSize - len, len, true);
+        }
+        return (0, totalSize, false);
+    }
+
+    /// <summary>
+    /// 取直链下载，直链失效（HttpRequestException）时清缓存重取一次重试；
+    /// 单流与分片各片都经此统一重试，opener 决定如何用直链发起请求
+    /// </summary>
+    private async Task<HttpResponseMessage> DownloadWithRetryAsync(
+        string fid,
+        Func<string, CancellationToken, Task<HttpResponseMessage>> opener,
+        CancellationToken ct
+    )
+    {
+        var url = await GetDownloadUrlAsync(fid);
         try
         {
-            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader, ct);
+            return await opener(url, ct);
         }
         catch (HttpRequestException)
         {
             await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
-            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader, ct);
+            return await opener(await GetDownloadUrlAsync(fid), ct);
         }
     }
 
@@ -118,20 +186,43 @@ public class QuarkClient : IQuarkClient
 
     /// <summary>
     /// 用直链发起流式下载：经共享 CookieContainer 的常驻 HttpClient 复用连接池，Cookie 由 handler 按 URL 域自动注入。
-    /// 仅读到响应头即返回，响应体由调用方流式读取；取消随调用方传入的 CancellationToken 传递。
+    /// 仅读到响应头即返回，响应体由调用方流式读取；start/end 非 null 时附带 Range 头。
     /// </summary>
     private async Task<HttpResponseMessage> OpenDownloadByUrlAsync(
         string downloadUrl,
-        string? rangeHeader,
+        long? start,
+        long? end,
         CancellationToken ct
     )
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
         request.Headers.Add("Referer", Referer);
         request.Headers.Add("User-Agent", UserAgent);
-        if (!string.IsNullOrEmpty(rangeHeader))
-            request.Headers.Add("Range", rangeHeader);
+        if (start is not null || end is not null)
+            request.Headers.Range = new RangeHeaderValue(start, end);
         return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+    }
+
+    /// <summary>
+    /// 把分片拼合流包装为带正确 Content-Range/Content-Length 的 HttpResponseMessage；
+    /// 释放响应时 StreamContent 会连带释放分片流（及其在途的上游连接）
+    /// </summary>
+    private static HttpResponseMessage BuildRangeResponse(
+        Stream stream,
+        long start,
+        long length,
+        long totalSize,
+        bool hasRange
+    )
+    {
+        var resp = new HttpResponseMessage(hasRange ? HttpStatusCode.PartialContent : HttpStatusCode.OK)
+        {
+            Content = new StreamContent(stream),
+        };
+        resp.Content.Headers.ContentLength = length;
+        if (hasRange)
+            resp.Content.Headers.ContentRange = new ContentRangeHeaderValue(start, start + length - 1, totalSize);
+        return resp;
     }
 
     /// <summary>

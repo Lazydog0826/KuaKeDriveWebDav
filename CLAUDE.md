@@ -49,8 +49,8 @@ dotnet build KuaKeDriveWebDav.sln
 - `EnsureSuccessAsync` 在每次接口成功后调用 `PersistCookieIfChangedAsync`：容器内 Cookie 与上次落盘内容比对，不同才加锁回写（`_lock`）。
 - `GetByPathAsync` 先 `ResolveRootFidAsync`（把 `QuarkOptions.RootPath` 映射为 fid，默认根目录 `"0"`，首次解析后缓存），再 `WalkAsync` 逐段匹配子节点。
 - `ListChildrenAsync` 经 `ICacheService` 缓存（key `quark:children:{fid}`，TTL `ListCacheMinutes`）。底层 `FetchListAsync` 调用 `GET /file/sort` 分页（每页 100），文件名做 `HtmlDecode`。
-- `OpenDownloadAsync(fid)` 是对外下载原语：内部 `GetDownloadUrlAsync`（按 fid 经 `ICacheService` 缓存，key `quark:dl:{fid}`，TTL `DownloadUrlCacheMinutes` 默认 10 分钟，避免并发 Range 请求逐个回源 `POST /file/download`）取直链后用同一 `CookieContainer` 流式请求；直链失效时自动清缓存重取一次（`HttpRequestException` 触发）。`GetDownloadUrlAsync`/`FetchDownloadUrlAsync`/按直链的 `OpenDownloadByUrlAsync` 均为内部细节，不暴露给调用方。
-- `QuarkWebDavStore` 包装 `IQuarkClient` 实现 `IWebDavStore`（只读），`OpenReadAsync` 直接调 `IQuarkClient.OpenDownloadAsync(fid)` 拿上游响应，不再感知直链/缓存/重试，上游 `HttpResponseMessage` 作为 `WebDavContent.Owner` 一并释放。`CookieUpdateMiddleware` 仍直接依赖 `IQuarkClient`，二者互不影响。
+- `OpenDownloadAsync(fid, totalSize, rangeHeader)` 是对外下载原语：解析 Range 后，范围大于单片（常量 10MB）且并发开启（常量 3 > 1）时构造 `QuarkParallelDownloadStream`（按 10MB 切片、3 路并发向夸克直链发 Range、按序拼合成单流，滑动窗口把内存压在约 30MB），用多条上游连接绕开夸克对单连接大文件的限速（参考 OpenList 夸克驱动，对应 AList issue #4175 的 aria2 切片验证）；否则回退单流。并发数与切片大小为 `QuarkClient` 常量（3 / 10MB），不读配置。内部 `GetDownloadUrlAsync`（按 fid 经 `ICacheService` 缓存，key `quark:dl:{fid}`，TTL `DownloadUrlCacheMinutes` 默认 10 分钟）取直链；直链失效时自动清缓存重取一次（`HttpRequestException` 触发，单流与每片各自重试）。`QuarkParallelDownloadStream`、`GetDownloadUrlAsync`/`FetchDownloadUrlAsync`/`OpenDownloadByUrlAsync` 均为内部细节，不暴露给调用方。
+- `QuarkWebDavStore` 包装 `IQuarkClient` 实现 `IWebDavStore`（只读），`OpenReadAsync` 直接调 `IQuarkClient.OpenDownloadAsync(fid, node.Size, rangeHeader)` 拿上游响应，不再感知直链/缓存/重试/分片，上游 `HttpResponseMessage`（分片模式下是包裹 `QuarkParallelDownloadStream` 的 `StreamContent`）作为 `WebDavContent.Owner` 一并释放。`CookieUpdateMiddleware` 仍直接依赖 `IQuarkClient`，二者互不影响。
 
 ### 本地存储（`Local/`）
 
@@ -64,7 +64,7 @@ dotnet build KuaKeDriveWebDav.sln
 ## 配置
 
 全部配置集中在 `appsettings.json`：
-- `Quark`：`CookieFilePath`（Cookie 持久化文件路径，默认 `cookie/quark-cookie.txt`，相对当前工作目录）、`RootPath`（映射为 WebDAV 根的夸克路径，默认 `/`）、`ListCacheMinutes`（目录列表缓存分钟数，默认 2）、`DownloadUrlCacheMinutes`（下载直链缓存分钟数，默认 10）。
+- `Quark`：`CookieFilePath`（Cookie 持久化文件路径，默认 `cookie/quark-cookie.txt`，相对当前工作目录）、`RootPath`（映射为 WebDAV 根的夸克路径，默认 `/`）、`ListCacheMinutes`（目录列表缓存分钟数，默认 2）、`DownloadUrlCacheMinutes`（下载直链缓存分钟数，默认 10）。（分片并发的连接数 3 与单片大小 10MB 是 `QuarkClient` 内的常量，不读配置。）
 - `WebDav`：`QuarkPrefix`（默认 `/dav/kuake`）、`LocalPrefix`（默认 `/dav/local`）、`Username`/`Password`（Basic Auth 凭据，两组路由共用）。
 - `Local`：`RootPath`（本地存储根目录，默认 `local-root`，相对当前工作目录）。
 - `CacheConfiguration`：`IsUseRedis`（false 时用内存缓存）、`KeyNamespace`（InfraKit 缓存 key 前缀）。
