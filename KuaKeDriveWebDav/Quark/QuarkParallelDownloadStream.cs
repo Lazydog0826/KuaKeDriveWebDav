@@ -8,6 +8,8 @@ namespace KuaKeDriveWebDav.Quark;
 /// </summary>
 internal sealed class QuarkParallelDownloadStream : Stream
 {
+    private const int PartBodyMaxRetries = 3;
+
     private readonly Func<long, int, CancellationToken, Task<HttpResponseMessage>> _openPart;
     private readonly long _rangeStart;
     private readonly long _rangeLength;
@@ -23,6 +25,7 @@ internal sealed class QuarkParallelDownloadStream : Stream
     private HttpResponseMessage? _current;
     private Stream? _currentStream;
     private long _position;
+    private int _currentRetryCount;
     private bool _disposed;
 
     internal QuarkParallelDownloadStream(
@@ -84,17 +87,44 @@ internal sealed class QuarkParallelDownloadStream : Stream
                 _currentStream = await _current.Content.ReadAsStreamAsync(cancellationToken);
             }
 
-            var want = (int)Math.Min(buffer.Length, _rangeLength - _position);
-            var n = await _currentStream.ReadAsync(buffer[..want], cancellationToken);
+            var currentPartEnd = Math.Min((long)(_nextToConsume + 1) * _partSize, _rangeLength);
+            var want = (int)Math.Min(buffer.Length, currentPartEnd - _position);
+            int n;
+            try
+            {
+                n = await _currentStream.ReadAsync(buffer[..want], cancellationToken);
+            }
+            catch (OperationCanceledException)
+                when (!_cts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                if (await ReopenCurrentPartAsync(currentPartEnd, cancellationToken))
+                    continue;
+                throw;
+            }
+            catch
+            {
+                if (await ReopenCurrentPartAsync(currentPartEnd, cancellationToken))
+                    continue;
+                throw;
+            }
+
             if (n > 0)
             {
                 _position += n;
                 return n;
             }
 
+            if (_position < currentPartEnd)
+            {
+                if (await ReopenCurrentPartAsync(currentPartEnd, cancellationToken))
+                    continue;
+                throw new EndOfStreamException("夸克分片下载提前结束");
+            }
+
             // 当前片读完，释放并补一个分片进窗口
             await DisposeCurrentAsync();
             _nextToConsume++;
+            _currentRetryCount = 0;
             _gate.Release();
             Pump();
         }
@@ -133,24 +163,54 @@ internal sealed class QuarkParallelDownloadStream : Stream
         }
     }
 
-    /// <summary>下载单个分片：成功返回上游响应（调用方按序消费其响应体）；失败则取消整个流并向上抛出</summary>
+    /// <summary>下载单个分片：成功返回上游响应（调用方按序消费其响应体）；失败时按 OpenList 策略重试数次</summary>
     private async Task<HttpResponseMessage> DownloadPartAsync(long start, int length)
     {
-        try
+        for (var retry = 0; retry <= PartBodyMaxRetries; retry++)
         {
-            var resp = await _openPart(start, length, _cts.Token);
-            resp.EnsureSuccessStatusCode();
-            return resp;
+            try
+            {
+                var resp = await _openPart(start, length, _cts.Token);
+                if (resp.IsSuccessStatusCode)
+                    return resp;
+
+                var statusCode = resp.StatusCode;
+                resp.Dispose();
+                throw new HttpRequestException($"夸克分片下载失败，状态码：{(int)statusCode}", null, statusCode);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (retry >= PartBodyMaxRetries)
+                {
+                    await _cts.CancelAsync();
+                    throw new IOException("夸克分片下载重试失败", ex);
+                }
+                await Task.Delay(Random.Shared.Next(200, 501), _cts.Token);
+            }
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch
-        {
-            await _cts.CancelAsync();
-            throw;
-        }
+
+        await _cts.CancelAsync();
+        throw new IOException("夸克分片下载重试失败");
+    }
+
+    /// <summary>当前分片 body 读取失败时，从已消费位置继续打开剩余范围</summary>
+    private async Task<bool> ReopenCurrentPartAsync(long currentPartEnd, CancellationToken cancellationToken)
+    {
+        if (_currentRetryCount >= PartBodyMaxRetries || _position >= currentPartEnd)
+            return false;
+
+        _currentRetryCount++;
+        await DisposeCurrentAsync();
+
+        var start = _rangeStart + _position;
+        var length = (int)(currentPartEnd - _position);
+        _current = await DownloadPartAsync(start, length);
+        _currentStream = await _current.Content.ReadAsStreamAsync(cancellationToken);
+        return true;
     }
 
     private async Task DisposeCurrentAsync()

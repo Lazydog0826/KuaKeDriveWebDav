@@ -26,9 +26,9 @@ public class QuarkClient : IQuarkClient
         + "Safari/537.36 Channel/pckk_other_ch";
 
     // 夸克对单连接下载大文件强制限速（约 100KB/s，会员亦然），需多连接并发突破；
-    // 采用 OpenList 夸克驱动实测值：3 路并发、单片 10MB（AList issue #4175 切片 8~18MB 区间最优）。
+    // OpenList 采用 3 路并发、单片 10MB；这里调小单片以适配 WebDAV 播放器常见的中小 Range 请求。
     private const int DownloadConcurrency = 3;
-    private const int DownloadPartSize = 10 * 1024 * 1024;
+    private const int DownloadPartSize = 4 * 1024 * 1024;
 
     private readonly IHttpService _httpService;
     private readonly ICacheService _cacheService;
