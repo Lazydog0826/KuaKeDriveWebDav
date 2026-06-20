@@ -7,3 +7,6 @@
 .idea
 
 *.user
+
+# Cookie 持久化（敏感，不入仓库）
+cookie/

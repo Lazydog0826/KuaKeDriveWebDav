@@ -40,23 +40,19 @@ public class QuarkClient : IQuarkClient
         _cookieContainer = new CookieContainer();
         _cookieFile = Path.IsPathRooted(_options.CookieFilePath)
             ? _options.CookieFilePath
-            : Path.Combine(AppContext.BaseDirectory, _options.CookieFilePath);
+            : Path.Combine(Environment.CurrentDirectory, _options.CookieFilePath);
 
-        // 优先沿用持久化文件中的最新 Cookie，否则回退到配置中的初始 Cookie
-        var fromFile = File.Exists(_cookieFile);
-        var initial = fromFile ? File.ReadAllText(_cookieFile).Trim() : _options.Cookie.Trim();
+        // 沿用持久化文件中的最新 Cookie（不存在或为空则保持空容器）
+        if (!File.Exists(_cookieFile))
+            return;
+        var initial = File.ReadAllText(_cookieFile).Trim();
         if (string.IsNullOrEmpty(initial))
-            initial = _options.Cookie.Trim();
-
-        // ReSharper disable once InvertIf
-        if (!string.IsNullOrEmpty(initial))
-        {
-            LoadCookieString(initial);
-            _lastSavedCookie = GetCurrentCookieString();
-            // 来自配置或容器规整后内容与文件不一致时才落盘，避免启动期无意义覆盖写
-            if (!fromFile || _lastSavedCookie != initial)
-                File.WriteAllText(_cookieFile, _lastSavedCookie);
-        }
+            return;
+        LoadCookieString(initial);
+        _lastSavedCookie = GetCurrentCookieString();
+        // 容器规整后内容与文件不一致时才落盘，避免启动期无意义覆盖写
+        if (_lastSavedCookie != initial)
+            File.WriteAllText(_cookieFile, _lastSavedCookie);
     }
 
     /// <inheritdoc />

@@ -5,11 +5,8 @@ namespace KuaKeDriveWebDav;
 /// </summary>
 public class QuarkOptions
 {
-    /// <summary>初始夸克登录 Cookie 字符串（浏览器复制）</summary>
-    public string Cookie { get; set; } = string.Empty;
-
-    /// <summary>Cookie 持久化文件路径，默认 quark-cookie.txt（相对程序目录）</summary>
-    public string CookieFilePath { get; set; } = "quark-cookie.txt";
+    /// <summary>Cookie 持久化文件路径，默认 cookie/quark-cookie.txt（相对当前工作目录）</summary>
+    public string CookieFilePath { get; set; } = "cookie/quark-cookie.txt";
 
     /// <summary>映射为 WebDAV 根的夸克路径，默认 / 即夸克根目录</summary>
     public string RootPath { get; set; } = "/";

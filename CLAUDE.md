@@ -37,7 +37,7 @@ dotnet build KuaKeDriveWebDav.sln
 ### 夸克客户端（`Quark/`）
 
 `QuarkClient` 以 **Singleton** 注册，跨请求维持登录态：
-- 持有共享 `CookieContainer`（domain `.quark.cn`），构造时优先从 `CookieFilePath`（默认 `quark-cookie.txt`，相对 `AppContext.BaseDirectory`）读取，否则回退到 `QuarkOptions.Cookie`。
+- 持有共享 `CookieContainer`（domain `.quark.cn`），构造时从 `CookieFilePath`（默认 `cookie/quark-cookie.txt`，相对当前工作目录）读取。
 - `EnsureSuccessAsync` 在每次接口成功后调用 `PersistCookieIfChangedAsync`：容器内 Cookie 与上次落盘内容比对，不同才加锁回写（`_lock`）。
 - `GetByPathAsync` 先 `ResolveRootFidAsync`（把 `QuarkOptions.RootPath` 映射为 fid，默认根目录 `"0"`，首次解析后缓存），再 `WalkAsync` 逐段匹配子节点。
 - `ListChildrenAsync` 经 `ICacheService` 缓存（key `quark:children:{fid}`，TTL `ListCacheMinutes`）。底层 `FetchListAsync` 调用 `GET /file/sort` 分页（每页 100），文件名做 `HtmlDecode`。
@@ -46,7 +46,7 @@ dotnet build KuaKeDriveWebDav.sln
 ## 配置
 
 全部配置集中在 `appsettings.json`：
-- `Quark`：`Cookie`（初始登录 Cookie）、`CookieFilePath`（持久化路径）、`RootPath`（映射为 WebDAV 根的夸克路径，默认 `/`）、`ListCacheMinutes`（目录列表缓存分钟数，默认 2）。
+- `Quark`：`CookieFilePath`（Cookie 持久化文件路径，默认 `cookie/quark-cookie.txt`，相对当前工作目录）、`RootPath`（映射为 WebDAV 根的夸克路径，默认 `/`）、`ListCacheMinutes`（目录列表缓存分钟数，默认 2）。
 - `WebDav`：`Prefix`（默认 `/dav`）、`Username`/`Password`（Basic Auth 凭据）。
 - `CacheConfiguration`：`IsUseRedis`（false 时用内存缓存）、`KeyNamespace`（InfraKit 缓存 key 前缀）。
 
