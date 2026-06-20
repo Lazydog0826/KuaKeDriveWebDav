@@ -16,6 +16,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
 
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
 
+    /// <summary>中间件入口：按 HTTP 方法分发只读请求，未支持的方法返回 405</summary>
     public async Task InvokeAsync(HttpContext context)
     {
         try
@@ -50,6 +51,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         }
     }
 
+    /// <summary>响应 OPTIONS 能力探测，声明允许的方法与 DAV 等级</summary>
     private static Task HandleOptionsAsync(HttpContext context)
     {
         context.Response.StatusCode = StatusCodes.Status200OK;
@@ -59,6 +61,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         return Task.CompletedTask;
     }
 
+    /// <summary>处理 PROPFIND：返回当前路径及其子节点的 multistatus 属性</summary>
     private async Task HandlePropfindAsync(HttpContext context)
     {
         var ct = context.RequestAborted;
@@ -89,6 +92,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         await WebDavMultistatus.WriteAsync(context.Response.Body, responses, requested, ct);
     }
 
+    /// <summary>处理 HEAD：返回文件元信息头，不输出正文</summary>
     private async Task HandleHeadAsync(HttpContext context)
     {
         var node = await quark.GetByPathAsync(context.Request.Path.Value ?? "/", context.RequestAborted);
@@ -107,6 +111,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         context.Response.Headers.ETag = MakeEtag(node);
     }
 
+    /// <summary>处理 GET：获取下载直链并流式回传文件内容，支持 Range 断点续传</summary>
     private async Task HandleGetAsync(HttpContext context)
     {
         var ct = context.RequestAborted;
@@ -147,6 +152,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         }
     }
 
+    /// <summary>将夸克文件节点转换为 WebDAV multistatus 响应项</summary>
     private static MultistatusResponse ToResponse(string href, QuarkFile file)
     {
         var isDir = !file.IsFile;
@@ -192,11 +198,14 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         return set.Count == 0 ? null : set;
     }
 
+    /// <summary>对路径各段做 URL 编码，保留分隔符</summary>
     private static string EncodePath(string path) =>
         string.Join('/', path.Split('/').Select(s => s.Length == 0 ? s : Uri.EscapeDataString(s)));
 
+    /// <summary>确保路径以 / 结尾</summary>
     private static string EnsureTrailingSlash(string path) => path.EndsWith('/') ? path : path + "/";
 
+    /// <summary>根据文件名推断 MIME 类型，未知扩展名回退为 application/octet-stream</summary>
     private static string GuessContentType(string fileName)
     {
         if (!ContentTypeProvider.TryGetContentType(fileName, out var contentType))
@@ -204,8 +213,10 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         return contentType;
     }
 
+    /// <summary>由文件 fid、大小、更新时间生成 ETag</summary>
     private static string MakeEtag(QuarkFile file) => $"\"{file.Fid}-{file.Size}-{file.UpdatedAt}\"";
 
+    /// <summary>以纯文本写出错误响应</summary>
     private static Task WriteErrorAsync(HttpContext context, int statusCode, string message)
     {
         context.Response.StatusCode = statusCode;

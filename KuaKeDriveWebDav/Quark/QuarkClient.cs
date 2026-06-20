@@ -48,6 +48,7 @@ public class QuarkClient : IQuarkClient
         if (string.IsNullOrEmpty(initial))
             initial = _options.Cookie.Trim();
 
+        // ReSharper disable once InvertIf
         if (!string.IsNullOrEmpty(initial))
         {
             LoadCookieString(initial);
