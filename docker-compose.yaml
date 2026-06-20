@@ -1,0 +1,14 @@
+services:
+  kuake-drive-webdav:
+    image: mc2635/kuake-drive-webdav
+    container_name: kuake-drive-webdav
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # 配置：相对 compose 文件指向源码内现成的 appsettings.json（只读）
+      - ./appsettings.json:/app/appsettings.json:ro
+      # 夸克 Cookie 持久化（可读写）
+      - ./cookie:/app/cookie
+      # 本地存储根目录（可读写）
+      - ./local-root:/app/local-root
