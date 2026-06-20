@@ -1,0 +1,11 @@
+# 构建产物
+**/bin/
+**/obj/
+
+# IDE
+.idea/
+*.user
+
+# 敏感配置与登录态：运行时挂载注入，不打入镜像
+KuaKeDriveWebDav/appsettings.json
+**/cookie/
