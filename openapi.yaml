@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: KuaKe Cookie Update API
+  version: 1.0.0
+  description: |
+    夸克 Cookie 热更新接口。
+
+    以纯文本形式提交整段夸克 Cookie 字符串，服务端整体替换 `CookieContainer`、落盘到
+    `cookie/quark-cookie.txt`、清除根 fid 缓存，并立即列根目录验证有效性。
+
+    - Cookie 无效时返回 400（此时 Cookie 已写入文件，调用方可据错误信息重传）。
+    - 仅接受 POST，其它方法返回 405。
+servers:
+  - url: http://localhost:8080
+    description: 默认监听地址（appsettings.json 的 Urls）
+security:
+  - BasicAuth: []
+components:
+  securitySchemes:
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: 与 WebDAV 路由共用的 Basic Auth 凭据（appsettings.json 的 WebDav:Username/Password）。
+paths:
+  /api/quark/cookie:
+    post:
+      tags: [Quark Cookie]
+      summary: 更新夸克 Cookie
+      operationId: updateQuarkCookie
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        description: 浏览器复制的整段 Cookie 字符串（含换行也无妨，服务端会把 `\r`/`\n` 统一替换为 `;`）。
+        content:
+          text/plain:
+            schema:
+              type: string
+            example: 'QUARK_GUID=xxxxx; __pus=yyyyy; __puus=zzzzz'
+      responses:
+        '200':
+          description: Cookie 更新成功
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: 夸克 Cookie 更新成功
+        '400':
+          description: Cookie 无效或验证失败（响应体为异常信息）
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: 未通过 Basic Auth 认证
+        '405':
+          description: 非 POST 方法
+          headers:
+            Allow:
+              schema:
+                type: string
+              description: 固定为 `POST`
