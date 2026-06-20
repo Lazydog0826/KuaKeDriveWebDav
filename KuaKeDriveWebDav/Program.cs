@@ -1,4 +1,5 @@
 using KuaKeDriveWebDav;
+using KuaKeDriveWebDav.Api;
 using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
@@ -29,6 +30,16 @@ await HostApp.StartWebAppAsync(
     async app =>
     {
         var prefix = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value.Prefix.TrimEnd('/');
+
+        // Cookie 更新接口：独立分支，复用 WebDAV 的 Basic Auth 认证
+        app.Map(
+            "/api/quark/cookie",
+            api =>
+            {
+                api.UseMiddleware<BasicAuthMiddleware>();
+                api.UseMiddleware<CookieUpdateMiddleware>();
+            }
+        );
 
         // ReSharper disable once MoveLocalFunctionAfterJumpStatement
         void ConfigureWebDav(IApplicationBuilder dav)

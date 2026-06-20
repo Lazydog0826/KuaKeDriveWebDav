@@ -28,4 +28,10 @@ public interface IQuarkClient
         string? rangeHeader,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// 用传入的 cookie 字符串整体替换当前登录态并持久化，随后调用一次列目录验证有效性；
+    /// 验证失败时 cookie 已写入，异常向上抛出由调用方反馈
+    /// </summary>
+    Task UpdateCookieAsync(string cookie, CancellationToken ct = default);
 }

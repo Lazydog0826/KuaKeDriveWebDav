@@ -25,7 +25,7 @@ public class QuarkClient : IQuarkClient
     private readonly ICacheService _cacheService;
     private readonly QuarkOptions _options;
 
-    private readonly CookieContainer _cookieContainer;
+    private CookieContainer _cookieContainer;
     private readonly string _cookieFile;
     private string _lastSavedCookie = string.Empty;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -107,6 +107,31 @@ public class QuarkClient : IQuarkClient
         if (!string.IsNullOrEmpty(rangeHeader))
             model.Heads["Range"] = rangeHeader;
         return await _httpService.RequestAsync(model, HttpCompletionOption.ResponseHeadersRead);
+    }
+
+    /// <inheritdoc />
+    public async Task UpdateCookieAsync(string cookie, CancellationToken ct = default)
+    {
+        // 浏览器复制的 cookie 可能含换行，统一成 ; 分隔后由 LoadCookieString 切分
+        var normalized = cookie.Replace("\r", ";").Replace("\n", ";");
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            // 整体替换：新建容器后重新加载，并同步落盘与基线，避免旧 Cookie 残留
+            _cookieContainer = new CookieContainer();
+            LoadCookieString(normalized);
+            _lastSavedCookie = GetCurrentCookieString();
+            await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
+            _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        // 立即列根目录验证 cookie 有效性，失败则抛出（cookie 已写入，调用方据此重传）
+        await FetchListAsync("0", ct);
     }
 
     /// <summary>
