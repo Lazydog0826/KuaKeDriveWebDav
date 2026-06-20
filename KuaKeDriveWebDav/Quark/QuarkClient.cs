@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
+using SeventyTwo.InfraKit.Core.App;
 using SeventyTwo.InfraKit.Http;
 
 // ReSharper disable MemberCanBeMadeStatic.Local
@@ -34,6 +35,11 @@ public class QuarkClient : IQuarkClient
 
     private string? _rootFid;
 
+    // 下载专用 HttpClient：底层 SocketsHttpHandler 绑定共享 CookieContainer，常驻复用连接池，
+    // 避免 IHttpService 对带 Cookie 请求每次 new HttpClient 导致 TCP/TLS 重建与慢启动跑不满带宽。
+    // 仅用于流式下载；列目录、取直链等小请求仍走 IHttpService。
+    private HttpClient _httpClient;
+
     public QuarkClient(IHttpService httpService, ICacheService cacheService, IOptions<QuarkOptions> options)
     {
         _httpService = httpService;
@@ -43,6 +49,7 @@ public class QuarkClient : IQuarkClient
         _cookieFile = Path.IsPathRooted(_options.CookieFilePath)
             ? _options.CookieFilePath
             : Path.Combine(Environment.CurrentDirectory, _options.CookieFilePath);
+        _httpClient = CreateHttpClient();
 
         // 沿用持久化文件中的最新 Cookie（不存在或为空则保持空容器）
         if (!File.Exists(_cookieFile))
@@ -87,12 +94,12 @@ public class QuarkClient : IQuarkClient
         // 直链可能过期失效，失败时清缓存重取一次再下载
         try
         {
-            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader);
+            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader, ct);
         }
         catch (HttpRequestException)
         {
             await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
-            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader);
+            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader, ct);
         }
     }
 
@@ -110,21 +117,33 @@ public class QuarkClient : IQuarkClient
     private string DownloadUrlKey(string fid) => $"quark:dl:{fid}";
 
     /// <summary>
-    /// 用直链发起流式下载（带 Cookie/Referer/UA，透传 Range）
+    /// 用直链发起流式下载：经共享 CookieContainer 的常驻 HttpClient 复用连接池，Cookie 由 handler 按 URL 域自动注入。
+    /// 仅读到响应头即返回，响应体由调用方流式读取；取消随调用方传入的 CancellationToken 传递。
     /// </summary>
-    private async Task<HttpResponseMessage> OpenDownloadByUrlAsync(string downloadUrl, string? rangeHeader)
+    private async Task<HttpResponseMessage> OpenDownloadByUrlAsync(
+        string downloadUrl,
+        string? rangeHeader,
+        CancellationToken ct
+    )
     {
-        var model = new HttpRequestModel
-        {
-            UriBuilder = new UriBuilder(downloadUrl),
-            HttpMethod = HttpMethod.Get,
-            CookieContainer = _cookieContainer,
-            Timeout = 600,
-            Heads = new Dictionary<string, string> { ["Referer"] = Referer, ["User-Agent"] = UserAgent },
-        };
+        using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+        request.Headers.Add("Referer", Referer);
+        request.Headers.Add("User-Agent", UserAgent);
         if (!string.IsNullOrEmpty(rangeHeader))
-            model.Heads["Range"] = rangeHeader;
-        return await _httpService.RequestAsync(model, HttpCompletionOption.ResponseHeadersRead);
+            request.Headers.Add("Range", rangeHeader);
+        return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+    }
+
+    /// <summary>
+    /// 创建下载专用 HttpClient：SocketsHttpHandler 绑定共享 CookieContainer 常驻复用连接池，
+    /// 消除每请求重建 TCP/TLS 与 TCP 慢启动；流式取消交给调用方 CancellationToken，禁用整体超时避免大文件中断。
+    /// </summary>
+    private HttpClient CreateHttpClient()
+    {
+        var handler = new SocketsHttpHandler { CookieContainer = _cookieContainer };
+        if (HostApp.HostEnvironment.IsDevelopment())
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
     /// <inheritdoc />
@@ -142,6 +161,7 @@ public class QuarkClient : IQuarkClient
             _lastSavedCookie = GetCurrentCookieString();
             await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
+            _httpClient = CreateHttpClient(); // 重建下载客户端以绑定新 Cookie 容器（旧 client 交由 GC 回收）
             // 直链缓存（quark:dl:*）不主动清：ICacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
         }
         finally
