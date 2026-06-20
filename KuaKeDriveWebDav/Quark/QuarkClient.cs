@@ -1,7 +1,4 @@
 using System.Net;
-using System.Net.Http.Json;
-using System.Web;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
@@ -85,12 +82,14 @@ public class QuarkClient : IQuarkClient
     public async Task<string> GetDownloadUrlAsync(string fid, CancellationToken ct = default)
     {
         var body = new { fids = new[] { fid } };
-        var resp = (await _httpService.RequestAsync<QuarkDownloadResp>(
-            BuildRequest("/file/download", HttpMethod.Post, null, body)
-        )) ?? throw new InvalidOperationException("夸克接口返回空响应");
+        var resp =
+            (
+                await _httpService.RequestAsync<QuarkDownloadResp>(
+                    BuildRequest("/file/download", HttpMethod.Post, null, body)
+                )
+            ) ?? throw new InvalidOperationException("夸克接口返回空响应");
         await EnsureSuccessAsync(resp, "获取夸克下载链接失败");
-        return resp.Data?.FirstOrDefault()?.DownloadUrl
-            ?? throw new InvalidOperationException("夸克未返回下载链接");
+        return resp.Data?.FirstOrDefault()?.DownloadUrl ?? throw new InvalidOperationException("夸克未返回下载链接");
     }
 
     /// <inheritdoc />
@@ -106,11 +105,7 @@ public class QuarkClient : IQuarkClient
             HttpMethod = HttpMethod.Get,
             CookieContainer = _cookieContainer,
             Timeout = 600,
-            Heads = new Dictionary<string, string>
-            {
-                ["Referer"] = Referer,
-                ["User-Agent"] = UserAgent,
-            },
+            Heads = new Dictionary<string, string> { ["Referer"] = Referer, ["User-Agent"] = UserAgent },
         };
         if (!string.IsNullOrEmpty(rangeHeader))
             model.Heads["Range"] = rangeHeader;
@@ -135,9 +130,7 @@ public class QuarkClient : IQuarkClient
             current = children.FirstOrDefault(c => c.FileName == seg);
             if (current is null)
             {
-                return throwIfMissing
-                    ? throw new InvalidOperationException($"夸克路径解析失败：找不到 {seg}")
-                    : null;
+                return throwIfMissing ? throw new InvalidOperationException($"夸克路径解析失败：找不到 {seg}") : null;
             }
             fid = current.Fid;
         }
@@ -183,9 +176,12 @@ public class QuarkClient : IQuarkClient
                 ["fetch_all_file"] = "1",
                 ["fetch_risk_file_name"] = "1",
             };
-            var resp = (await _httpService.RequestAsync<QuarkSortResp>(
-                BuildRequest("/file/sort", HttpMethod.Get, query, null)
-            )) ?? throw new InvalidOperationException("夸克接口返回空响应");
+            var resp =
+                (
+                    await _httpService.RequestAsync<QuarkSortResp>(
+                        BuildRequest("/file/sort", HttpMethod.Get, query, null)
+                    )
+                ) ?? throw new InvalidOperationException("夸克接口返回空响应");
             await EnsureSuccessAsync(resp, "夸克列目录失败");
             if (resp.Data?.List is not null)
             {
@@ -230,10 +226,7 @@ public class QuarkClient : IQuarkClient
             foreach (var kv in query)
                 q[kv.Key] = kv.Value;
         }
-        ub.Query = string.Join(
-            "&",
-            q.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}")
-        );
+        ub.Query = string.Join("&", q.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
 
         var model = new HttpRequestModel
         {
@@ -259,12 +252,7 @@ public class QuarkClient : IQuarkClient
     /// </summary>
     private void LoadCookieString(string cookie)
     {
-        foreach (
-            var part in cookie.Split(
-                ';',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
-            )
-        )
+        foreach (var part in cookie.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var idx = part.IndexOf('=');
             if (idx <= 0)

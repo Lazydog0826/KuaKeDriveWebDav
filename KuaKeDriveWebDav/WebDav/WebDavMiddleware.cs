@@ -71,8 +71,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
         }
 
         var depth = context.Request.Headers["Depth"].ToString();
-        var includeChildren =
-            node.IsDirectory && !string.Equals(depth, "0", StringComparison.OrdinalIgnoreCase);
+        var includeChildren = node.IsDirectory && !string.Equals(depth, "0", StringComparison.OrdinalIgnoreCase);
 
         var requested = await ParseRequestedPropsAsync(context.Request.Body, ct);
         var hrefBase = (context.Request.PathBase.Value ?? "") + path;
@@ -92,10 +91,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
 
     private async Task HandleHeadAsync(HttpContext context)
     {
-        var node = await quark.GetByPathAsync(
-            context.Request.Path.Value ?? "/",
-            context.RequestAborted
-        );
+        var node = await quark.GetByPathAsync(context.Request.Path.Value ?? "/", context.RequestAborted);
         if (node is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -145,8 +141,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
             if (upstream.Content.Headers.ContentLength is not null)
                 context.Response.ContentLength = upstream.Content.Headers.ContentLength;
             if (upstream.Content.Headers.ContentRange is not null)
-                context.Response.Headers.ContentRange = upstream
-                    .Content.Headers.ContentRange.ToString();
+                context.Response.Headers.ContentRange = upstream.Content.Headers.ContentRange.ToString();
             context.Response.Headers.AcceptRanges = "bytes";
             await upstream.Content.CopyToAsync(context.Response.Body, ct);
         }
@@ -172,10 +167,7 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
     /// <summary>
     /// 解析 PROPFIND 请求体，返回客户端请求的属性名集合；null 表示 allprop（返回全集）
     /// </summary>
-    private static async Task<HashSet<string>?> ParseRequestedPropsAsync(
-        Stream body,
-        CancellationToken ct
-    )
+    private static async Task<HashSet<string>?> ParseRequestedPropsAsync(Stream body, CancellationToken ct)
     {
         XDocument doc;
         try
@@ -201,13 +193,9 @@ public class WebDavMiddleware(RequestDelegate next, IQuarkClient quark)
     }
 
     private static string EncodePath(string path) =>
-        string.Join(
-            '/',
-            path.Split('/').Select(s => s.Length == 0 ? s : Uri.EscapeDataString(s))
-        );
+        string.Join('/', path.Split('/').Select(s => s.Length == 0 ? s : Uri.EscapeDataString(s)));
 
-    private static string EnsureTrailingSlash(string path) =>
-        path.EndsWith('/') ? path : path + "/";
+    private static string EnsureTrailingSlash(string path) => path.EndsWith('/') ? path : path + "/";
 
     private static string GuessContentType(string fileName)
     {

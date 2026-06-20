@@ -33,43 +33,42 @@ public static class WebDavMultistatus
     private const string Dav = "DAV:";
 
     /// <summary>支持的属性名 → 写出器，键集即支持的属性集合，单点维护</summary>
-    private static readonly Dictionary<string, Action<XmlWriter, MultistatusResponse>> PropWriters =
-        new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, Action<XmlWriter, MultistatusResponse>> PropWriters = new(
+        StringComparer.OrdinalIgnoreCase
+    )
+    {
+        ["displayname"] = (w, r) => w.WriteElementString("D", "displayname", Dav, r.Name),
+        ["resourcetype"] = (w, r) =>
         {
-            ["displayname"] = (w, r) => w.WriteElementString("D", "displayname", Dav, r.Name),
-            ["resourcetype"] = (w, r) =>
-            {
-                w.WriteStartElement("D", "resourcetype", Dav);
-                if (r.IsDirectory)
-                    w.WriteElementString("D", "collection", Dav, string.Empty);
-                w.WriteEndElement();
-            },
-            ["getcontentlength"] = (w, r) =>
-                w.WriteElementString(
-                    "D",
-                    "getcontentlength",
-                    Dav,
-                    r.IsDirectory ? "0" : r.Size.ToString()
-                ),
-            ["getlastmodified"] = (w, r) =>
-            {
-                if (r.UpdatedAt > 0)
-                    w.WriteElementString("D", "getlastmodified", Dav, FormatRfc1123(r.UpdatedAt));
-            },
-            ["creationdate"] = (w, r) =>
-            {
-                if (r.CreatedAt > 0)
-                    w.WriteElementString("D", "creationdate", Dav, FormatIso8601(r.CreatedAt));
-            },
-            ["getcontenttype"] = (w, r) =>
-            {
-                if (!r.IsDirectory)
-                    w.WriteElementString("D", "getcontenttype", Dav, r.ContentType);
-            },
-            ["getetag"] = (w, r) => w.WriteElementString("D", "getetag", Dav, r.Etag),
-        };
+            w.WriteStartElement("D", "resourcetype", Dav);
+            if (r.IsDirectory)
+                w.WriteElementString("D", "collection", Dav, string.Empty);
+            w.WriteEndElement();
+        },
+        ["getcontentlength"] = (w, r) =>
+            w.WriteElementString("D", "getcontentlength", Dav, r.IsDirectory ? "0" : r.Size.ToString()),
+        ["getlastmodified"] = (w, r) =>
+        {
+            if (r.UpdatedAt > 0)
+                w.WriteElementString("D", "getlastmodified", Dav, FormatRfc1123(r.UpdatedAt));
+        },
+        ["creationdate"] = (w, r) =>
+        {
+            if (r.CreatedAt > 0)
+                w.WriteElementString("D", "creationdate", Dav, FormatIso8601(r.CreatedAt));
+        },
+        ["getcontenttype"] = (w, r) =>
+        {
+            if (!r.IsDirectory)
+                w.WriteElementString("D", "getcontenttype", Dav, r.ContentType);
+        },
+        ["getetag"] = (w, r) => w.WriteElementString("D", "getetag", Dav, r.Etag),
+    };
 
+    /// <param name="output">写入 multistatus XML 的输出流</param>
+    /// <param name="responses">要序列化的响应条目列表</param>
     /// <param name="requested">客户端请求的属性集合，null 表示 allprop（返回全集）</param>
+    /// <param name="ct">取消令牌</param>
     public static async Task WriteAsync(
         Stream output,
         IReadOnlyList<MultistatusResponse> responses,
@@ -92,9 +91,7 @@ public static class WebDavMultistatus
         var returning = requested is null
             ? PropWriters.Keys.ToList()
             : PropWriters.Keys.Where(requested.Contains).ToList();
-        var unsupported = requested is null
-            ? (IReadOnlyList<string>)Array.Empty<string>()
-            : requested.Where(p => !PropWriters.ContainsKey(p)).ToList();
+        var unsupported = requested?.Where(p => !PropWriters.ContainsKey(p)).ToList() ?? (IReadOnlyList<string>)[];
 
         foreach (var r in responses)
         {
@@ -127,13 +124,9 @@ public static class WebDavMultistatus
         millis <= 0 ? string.Empty : DateTimeOffset.FromUnixTimeMilliseconds(millis).ToString("R");
 
     private static string FormatIso8601(long millis) =>
-        DateTimeOffset.FromUnixTimeMilliseconds(millis)
-            .UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        DateTimeOffset.FromUnixTimeMilliseconds(millis).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
 
-    private static async Task WriteUnsupportedPropstatAsync(
-        XmlWriter writer,
-        IReadOnlyList<string> unsupported
-    )
+    private static async Task WriteUnsupportedPropstatAsync(XmlWriter writer, IReadOnlyList<string> unsupported)
     {
         await writer.WriteStartElementAsync("D", "propstat", Dav);
         await writer.WriteStartElementAsync("D", "prop", Dav);

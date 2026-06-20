@@ -28,10 +28,9 @@ await HostApp.StartWebAppAsync(
     },
     async app =>
     {
-        var prefix = app.Services
-            .GetRequiredService<IOptions<WebDavOptions>>()
-            .Value.Prefix.TrimEnd('/');
+        var prefix = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value.Prefix.TrimEnd('/');
 
+        // ReSharper disable once MoveLocalFunctionAfterJumpStatement
         void ConfigureWebDav(IApplicationBuilder dav)
         {
             dav.UseMiddleware<BasicAuthMiddleware>();

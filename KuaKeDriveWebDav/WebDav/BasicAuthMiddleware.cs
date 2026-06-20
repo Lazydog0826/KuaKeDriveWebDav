@@ -31,10 +31,7 @@ public class BasicAuthMiddleware(RequestDelegate next, IOptions<WebDavOptions> o
 
     private static bool TryValidate(string header, string username, string password)
     {
-        if (
-            string.IsNullOrEmpty(username)
-            || !header.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase)
-        )
+        if (string.IsNullOrEmpty(username) || !header.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
             return false;
         try
         {

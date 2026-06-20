@@ -23,5 +23,9 @@ public interface IQuarkClient
     /// <summary>
     /// 以流方式打开下载（带 Cookie/Referer/UA，透传 Range），返回上游响应（调用方负责释放）
     /// </summary>
-    Task<HttpResponseMessage> OpenDownloadAsync(string downloadUrl, string? rangeHeader, CancellationToken ct = default);
+    Task<HttpResponseMessage> OpenDownloadAsync(
+        string downloadUrl,
+        string? rangeHeader,
+        CancellationToken ct = default
+    );
 }

@@ -1,5 +1,10 @@
 using System.Text.Json.Serialization;
 
+// ReSharper disable PropertyCanBeMadeInitOnly.Global
+// ReSharper disable ClassNeverInstantiated.Global
+// ReSharper disable UnusedAutoPropertyAccessor.Global
+// ReSharper disable CollectionNeverUpdated.Global
+
 namespace KuaKeDriveWebDav.Quark;
 
 /// <summary>
@@ -63,7 +68,7 @@ public class QuarkSortResp : QuarkResp
 public class QuarkSortData
 {
     [JsonPropertyName("list")]
-    public List<QuarkFile> List { get; set; } = new();
+    public List<QuarkFile> List { get; set; } = [];
 }
 
 public class QuarkSortMetadata
