@@ -173,7 +173,8 @@ public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolve
         if (content.ContentRange is not null)
             context.Response.Headers.ContentRange = content.ContentRange;
         context.Response.Headers.AcceptRanges = "bytes";
-        await content.Stream.CopyToAsync(context.Response.Body, ct);
+        // 1MB 缓冲，降低大文件流式透传的拷贝开销
+        await content.Stream.CopyToAsync(context.Response.Body, 1024 * 1024, ct);
     }
 
     /// <summary>处理 PUT：上传/覆盖文件，统一返回 200</summary>

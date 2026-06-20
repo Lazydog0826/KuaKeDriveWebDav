@@ -13,6 +13,9 @@ public class QuarkOptions
 
     /// <summary>目录列表缓存分钟数</summary>
     public int ListCacheMinutes { get; set; } = 2;
+
+    /// <summary>下载直链缓存分钟数（夸克直链有效期内可复用，避免每个 Range 请求都回源取直链）</summary>
+    public int DownloadUrlCacheMinutes { get; set; } = 10;
 }
 
 /// <summary>

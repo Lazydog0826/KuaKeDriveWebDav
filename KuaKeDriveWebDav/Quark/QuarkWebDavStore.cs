@@ -29,19 +29,7 @@ public sealed class QuarkWebDavStore(IQuarkClient quark) : IWebDavStore
     /// <inheritdoc />
     public async Task<WebDavContent> OpenReadAsync(WebDavNode node, string? rangeHeader, CancellationToken ct = default)
     {
-        // 直链可能过期失效，失败时重新获取一次再下载
-        async Task<HttpResponseMessage> OpenFreshAsync() =>
-            await quark.OpenDownloadAsync(await quark.GetDownloadUrlAsync(node.Id, ct), rangeHeader, ct);
-
-        HttpResponseMessage upstream;
-        try
-        {
-            upstream = await OpenFreshAsync();
-        }
-        catch (HttpRequestException)
-        {
-            upstream = await OpenFreshAsync();
-        }
+        var upstream = await quark.OpenDownloadAsync(node.Id, rangeHeader, ct);
 
         var stream = await upstream.Content.ReadAsStreamAsync(ct);
         return new WebDavContent

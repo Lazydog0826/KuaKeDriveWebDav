@@ -4,6 +4,8 @@ using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
 using SeventyTwo.InfraKit.Http;
 
+// ReSharper disable MemberCanBeMadeStatic.Local
+
 namespace KuaKeDriveWebDav.Quark;
 
 /// <summary>
@@ -76,25 +78,41 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <inheritdoc />
-    public async Task<string> GetDownloadUrlAsync(string fid, CancellationToken ct = default)
-    {
-        var body = new { fids = new[] { fid } };
-        var resp =
-            (
-                await _httpService.RequestAsync<QuarkDownloadResp>(
-                    BuildRequest("/file/download", HttpMethod.Post, null, body)
-                )
-            ) ?? throw new InvalidOperationException("夸克接口返回空响应");
-        await EnsureSuccessAsync(resp, "获取夸克下载链接失败");
-        return resp.Data?.FirstOrDefault()?.DownloadUrl ?? throw new InvalidOperationException("夸克未返回下载链接");
-    }
-
-    /// <inheritdoc />
     public async Task<HttpResponseMessage> OpenDownloadAsync(
-        string downloadUrl,
+        string fid,
         string? rangeHeader,
         CancellationToken ct = default
     )
+    {
+        // 直链可能过期失效，失败时清缓存重取一次再下载
+        try
+        {
+            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader);
+        }
+        catch (HttpRequestException)
+        {
+            await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+            return await OpenDownloadByUrlAsync(await GetDownloadUrlAsync(fid), rangeHeader);
+        }
+    }
+
+    /// <summary>
+    /// 按 fid 获取下载直链，经 ICacheService 缓存（TTL 内复用，避免并发 Range 请求逐个回源）
+    /// </summary>
+    private Task<string> GetDownloadUrlAsync(string fid) =>
+        _cacheService.GetOrCreateCacheAsync(
+            DownloadUrlKey(fid),
+            () => FetchDownloadUrlAsync(fid),
+            TimeSpan.FromMinutes(_options.DownloadUrlCacheMinutes)
+        );
+
+    /// <summary>直链缓存 key</summary>
+    private string DownloadUrlKey(string fid) => $"quark:dl:{fid}";
+
+    /// <summary>
+    /// 用直链发起流式下载（带 Cookie/Referer/UA，透传 Range）
+    /// </summary>
+    private async Task<HttpResponseMessage> OpenDownloadByUrlAsync(string downloadUrl, string? rangeHeader)
     {
         var model = new HttpRequestModel
         {
@@ -124,6 +142,7 @@ public class QuarkClient : IQuarkClient
             _lastSavedCookie = GetCurrentCookieString();
             await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
+            // 直链缓存（quark:dl:*）不主动清：ICacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
         }
         finally
         {
@@ -176,6 +195,22 @@ public class QuarkClient : IQuarkClient
         // string 引用赋值原子；并发首次解析最坏各解析一次，结果一致
         _rootFid = fid;
         return fid;
+    }
+
+    /// <summary>
+    /// 调用 POST /file/download 获取单文件下载直链（供 GetOrCreateCacheAsync 的工厂回调使用）
+    /// </summary>
+    private async Task<string> FetchDownloadUrlAsync(string fid)
+    {
+        var body = new { fids = new[] { fid } };
+        var resp =
+            (
+                await _httpService.RequestAsync<QuarkDownloadResp>(
+                    BuildRequest("/file/download", HttpMethod.Post, null, body)
+                )
+            ) ?? throw new InvalidOperationException("夸克接口返回空响应");
+        await EnsureSuccessAsync(resp, "获取夸克下载链接失败");
+        return resp.Data?.FirstOrDefault()?.DownloadUrl ?? throw new InvalidOperationException("夸克未返回下载链接");
     }
 
     /// <summary>
