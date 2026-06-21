@@ -64,6 +64,15 @@ public sealed class WebDavContent : IDisposable, IAsyncDisposable
 }
 
 /// <summary>
+/// WebDAV Range 不可满足异常，用于返回 416 Range Not Satisfiable
+/// </summary>
+public sealed class WebDavRangeNotSatisfiableException(long totalSize, string message) : Exception(message)
+{
+    /// <summary>资源总长度</summary>
+    public long TotalSize { get; } = totalSize;
+}
+
+/// <summary>
 /// WebDAV 数据源支持的能力标志，决定 OPTIONS 响应的 Allow 头与写方法可用性
 /// </summary>
 [Flags]

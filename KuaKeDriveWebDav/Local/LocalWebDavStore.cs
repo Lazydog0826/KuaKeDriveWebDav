@@ -50,6 +50,18 @@ public sealed class LocalWebDavStore(IOptions<LocalOptions> options) : IWebDavSt
     public Task<WebDavContent> OpenReadAsync(WebDavNode node, string? rangeHeader, CancellationToken ct = default)
     {
         var physical = ResolvePhysical(node.Id);
+        var total = new FileInfo(physical).Length;
+
+        long start = 0;
+        long end = total - 1;
+        var hasRange = TryParseRange(rangeHeader, total, out var rStart, out var rEnd);
+        if (!hasRange && !string.IsNullOrEmpty(rangeHeader))
+            throw new WebDavRangeNotSatisfiableException(total, "请求的 Range 超出资源范围");
+        if (hasRange)
+        {
+            start = rStart;
+            end = rEnd;
+        }
 
         var stream = new FileStream(
             physical,
@@ -59,16 +71,6 @@ public sealed class LocalWebDavStore(IOptions<LocalOptions> options) : IWebDavSt
             bufferSize: 81920,
             FileOptions.Asynchronous
         );
-        var total = stream.Length;
-
-        long start = 0;
-        long end = total - 1;
-        var hasRange = TryParseRange(rangeHeader, total, out var rStart, out var rEnd);
-        if (hasRange)
-        {
-            start = rStart;
-            end = rEnd;
-        }
         stream.Seek(start, SeekOrigin.Begin);
 
         int statusCode;

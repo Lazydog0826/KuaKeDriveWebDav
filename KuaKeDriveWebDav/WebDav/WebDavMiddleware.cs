@@ -84,6 +84,11 @@ public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolve
         {
             await WriteErrorAsync(context, StatusCodes.Status404NotFound, ex.Message);
         }
+        catch (WebDavRangeNotSatisfiableException ex)
+        {
+            context.Response.Headers.ContentRange = $"bytes */{ex.TotalSize}";
+            await WriteErrorAsync(context, StatusCodes.Status416RangeNotSatisfiable, ex.Message);
+        }
         catch (InvalidOperationException ex)
         {
             await WriteErrorAsync(context, StatusCodes.Status409Conflict, ex.Message);

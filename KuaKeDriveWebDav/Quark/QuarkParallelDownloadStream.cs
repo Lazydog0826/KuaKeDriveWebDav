@@ -159,7 +159,18 @@ internal sealed class QuarkParallelDownloadStream : Stream
             var idx = _nextToSchedule++;
             var start = _rangeStart + (long)idx * _partSize;
             var len = (int)Math.Min(_partSize, _rangeLength - (long)idx * _partSize);
-            _parts[idx] = DownloadPartAsync(start, len);
+            var task = DownloadPartAsync(start, len);
+            _parts[idx] = task;
+            _ = task.ContinueWith(
+                t =>
+                {
+                    if (_disposed && t is { IsCompletedSuccessfully: true })
+                        t.Result.Dispose();
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
@@ -29,6 +30,7 @@ public class QuarkClient : IQuarkClient
     // OpenList 采用 3 路并发、单片 10MB；这里调小单片以适配 WebDAV 播放器常见的中小 Range 请求。
     private const int DownloadConcurrency = 3;
     private const int DownloadPartSize = 4 * 1024 * 1024;
+    private const int MaxUpstreamConcurrency = 12;
 
     private readonly IHttpService _httpService;
     private readonly ICacheService _cacheService;
@@ -38,6 +40,7 @@ public class QuarkClient : IQuarkClient
     private readonly string _cookieFile;
     private string _lastSavedCookie = string.Empty;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly SemaphoreSlim _downloadGate = new(MaxUpstreamConcurrency, MaxUpstreamConcurrency);
 
     private string? _rootFid;
 
@@ -109,12 +112,13 @@ public class QuarkClient : IQuarkClient
             return await DownloadWithRetryAsync(
                 fid,
                 (url, token) => OpenDownloadByUrlAsync(url, rangeStart, rangeEnd, token),
+                hasRange,
                 ct
             );
 
         var stream = new QuarkParallelDownloadStream(
             (s, l, token) =>
-                DownloadWithRetryAsync(fid, (url, t) => OpenDownloadByUrlAsync(url, s, s + l - 1, t), token),
+                DownloadWithRetryAsync(fid, (url, t) => OpenDownloadByUrlAsync(url, s, s + l - 1, t), true, token),
             start,
             length,
             DownloadPartSize,
@@ -125,49 +129,78 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <summary>
-    /// 解析 Range 头为（起始偏移、长度、是否带 Range）；无 Range 或解析失败按整文件处理
+    /// 解析 Range 头为（起始偏移、长度、是否带 Range）；无 Range 按整文件处理，非法 Range 抛出 416 异常
     /// </summary>
     private static (long Start, long Length, bool HasRange) ParseRange(string? rangeHeader, long totalSize)
     {
-        if (
-            string.IsNullOrEmpty(rangeHeader)
-            || !RangeHeaderValue.TryParse(rangeHeader, out var parsed)
-            || parsed.Ranges.Count == 0
-        )
+        if (string.IsNullOrEmpty(rangeHeader))
             return (0, totalSize, false);
+        if (!RangeHeaderValue.TryParse(rangeHeader, out var parsed))
+            throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
+
+        if (totalSize <= 0 || parsed.Ranges.Count != 1)
+            throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
 
         var r = parsed.Ranges.First();
         if (r.From is not null && r.To is not null)
-            return (r.From.Value, r.To.Value - r.From.Value + 1, true);
+        {
+            var start = r.From.Value;
+            var end = r.To.Value;
+            if (start < 0 || end < start || start >= totalSize)
+                throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
+            end = Math.Min(end, totalSize - 1);
+            return (start, end - start + 1, true);
+        }
         if (r.From is not null)
-            return (r.From.Value, totalSize - r.From.Value, true);
+        {
+            var start = r.From.Value;
+            if (start < 0 || start >= totalSize)
+                throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
+            return (start, totalSize - start, true);
+        }
         if (r.To is not null)
         {
             var len = Math.Min(r.To.Value, totalSize);
+            if (len <= 0)
+                throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
             return (totalSize - len, len, true);
         }
-        return (0, totalSize, false);
+        throw new WebDavRangeNotSatisfiableException(totalSize, "请求的 Range 超出资源范围");
     }
 
     /// <summary>
-    /// 取直链下载，直链失效（HttpRequestException）时清缓存重取一次重试；
+    /// 取直链下载，直链失效（HttpRequestException 或非成功状态码）时清缓存重取一次重试；
     /// 单流与分片各片都经此统一重试，opener 决定如何用直链发起请求
     /// </summary>
     private async Task<HttpResponseMessage> DownloadWithRetryAsync(
         string fid,
         Func<string, CancellationToken, Task<HttpResponseMessage>> opener,
+        bool requirePartialContent,
         CancellationToken ct
     )
     {
-        var url = await GetDownloadUrlAsync(fid);
-        try
+        var retried = false;
+        while (true)
         {
-            return await opener(url, ct);
-        }
-        catch (HttpRequestException)
-        {
-            await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
-            return await opener(await GetDownloadUrlAsync(fid), ct);
+            var url = await GetDownloadUrlAsync(fid);
+            try
+            {
+                var resp = await opener(url, ct);
+                if (
+                    resp.IsSuccessStatusCode
+                    && (!requirePartialContent || resp.StatusCode == HttpStatusCode.PartialContent)
+                )
+                    return resp;
+
+                var statusCode = resp.StatusCode;
+                resp.Dispose();
+                throw new HttpRequestException($"夸克下载失败，状态码：{(int)statusCode}", null, statusCode);
+            }
+            catch (HttpRequestException) when (!retried)
+            {
+                retried = true;
+                await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+            }
         }
     }
 
@@ -195,12 +228,23 @@ public class QuarkClient : IQuarkClient
         CancellationToken ct
     )
     {
+        await _downloadGate.WaitAsync(ct);
         using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
         request.Headers.Add("Referer", Referer);
         request.Headers.Add("User-Agent", UserAgent);
         if (start is not null || end is not null)
             request.Headers.Range = new RangeHeaderValue(start, end);
-        return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        try
+        {
+            var resp = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.Content = new SemaphoreReleasingHttpContent(resp.Content, _downloadGate);
+            return resp;
+        }
+        catch
+        {
+            _downloadGate.Release();
+            throw;
+        }
     }
 
     /// <summary>
@@ -235,6 +279,52 @@ public class QuarkClient : IQuarkClient
         if (HostApp.HostEnvironment.IsDevelopment())
             handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+    }
+
+    private sealed class SemaphoreReleasingHttpContent : HttpContent
+    {
+        private readonly HttpContent _inner;
+        private readonly SemaphoreSlim _gate;
+        private int _released;
+
+        public SemaphoreReleasingHttpContent(HttpContent inner, SemaphoreSlim gate)
+        {
+            _inner = inner;
+            _gate = gate;
+            foreach (var header in inner.Headers)
+                Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            _inner.CopyToAsync(stream);
+
+        protected override Task SerializeToStreamAsync(
+            Stream stream,
+            TransportContext? context,
+            CancellationToken cancellationToken
+        ) => _inner.CopyToAsync(stream, cancellationToken);
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => _inner.ReadAsStreamAsync();
+
+        protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken) =>
+            _inner.ReadAsStreamAsync(cancellationToken);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _inner.Headers.ContentLength ?? 0;
+            return _inner.Headers.ContentLength is not null;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _inner.Dispose();
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                _gate.Release();
+            }
+            base.Dispose(disposing);
+        }
     }
 
     /// <inheritdoc />
