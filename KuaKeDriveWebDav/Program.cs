@@ -9,6 +9,7 @@ using SeventyTwo.InfraKit.Http;
 
 await HostApp.StartWebAppAsync(
     args,
+    [typeof(AssemblyMark).Assembly],
     async builder =>
     {
         // 强类型配置
