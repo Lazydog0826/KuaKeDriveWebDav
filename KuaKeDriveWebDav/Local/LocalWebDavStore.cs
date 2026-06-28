@@ -43,7 +43,11 @@ public sealed class LocalWebDavStore(IOptions<LocalOptions> options) : IWebDavSt
             var isDir = Directory.Exists(entry);
             list.Add(ToNode(entry, relative, isDir));
         }
-        return Task.FromResult<IReadOnlyList<WebDavNode>>(list);
+        return Task.FromResult<IReadOnlyList<WebDavNode>>(
+            list.OrderByDescending(x => x.IsDirectory)
+                .ThenByDescending(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList()
+        );
     }
 
     /// <inheritdoc />
