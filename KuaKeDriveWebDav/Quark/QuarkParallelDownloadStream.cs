@@ -9,8 +9,10 @@ namespace KuaKeDriveWebDav.Quark;
 internal sealed class QuarkParallelDownloadStream : Stream
 {
     private const int PartBodyMaxRetries = 3;
+    private const int PartReadIdleTimeoutSeconds = 30;
 
     private readonly Func<long, int, CancellationToken, Task<HttpResponseMessage>> _openPart;
+    private readonly ILogger _logger;
     private readonly long _rangeStart;
     private readonly long _rangeLength;
     private readonly int _partSize;
@@ -34,10 +36,12 @@ internal sealed class QuarkParallelDownloadStream : Stream
         long rangeLength,
         int partSize,
         int concurrency,
+        ILogger logger,
         CancellationToken externalCt
     )
     {
         _openPart = openPart;
+        _logger = logger;
         _rangeStart = rangeStart;
         _rangeLength = rangeLength;
         _partSize = partSize;
@@ -92,7 +96,7 @@ internal sealed class QuarkParallelDownloadStream : Stream
             int n;
             try
             {
-                n = await _currentStream.ReadAsync(buffer[..want], cancellationToken);
+                n = await ReadCurrentStreamAsync(buffer[..want], cancellationToken);
             }
             catch (OperationCanceledException)
                 when (!_cts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -103,6 +107,12 @@ internal sealed class QuarkParallelDownloadStream : Stream
             }
             catch
             {
+                _logger.LogWarning(
+                    "夸克分片读取失败，准备重开当前分片 rangeStart={RangeStart}, position={Position}, partIndex={PartIndex}",
+                    _rangeStart,
+                    _position,
+                    _nextToConsume
+                );
                 if (await ReopenCurrentPartAsync(currentPartEnd, cancellationToken))
                     continue;
                 throw;
@@ -197,9 +207,23 @@ internal sealed class QuarkParallelDownloadStream : Stream
             {
                 if (retry >= PartBodyMaxRetries)
                 {
+                    _logger.LogError(
+                        ex,
+                        "夸克分片下载重试失败 start={Start}, length={Length}, retry={Retry}",
+                        start,
+                        length,
+                        retry
+                    );
                     await _cts.CancelAsync();
                     throw new IOException("夸克分片下载重试失败", ex);
                 }
+                _logger.LogWarning(
+                    ex,
+                    "夸克分片下载失败，稍后重试 start={Start}, length={Length}, retry={Retry}",
+                    start,
+                    length,
+                    retry + 1
+                );
                 await Task.Delay(Random.Shared.Next(200, 501), _cts.Token);
             }
         }
@@ -215,6 +239,13 @@ internal sealed class QuarkParallelDownloadStream : Stream
             return false;
 
         _currentRetryCount++;
+        _logger.LogWarning(
+            "重开夸克当前分片 rangeStart={RangeStart}, position={Position}, remainingLength={Length}, retry={Retry}",
+            _rangeStart,
+            _position,
+            currentPartEnd - _position,
+            _currentRetryCount
+        );
         await DisposeCurrentAsync();
 
         var start = _rangeStart + _position;
@@ -222,6 +253,21 @@ internal sealed class QuarkParallelDownloadStream : Stream
         _current = await DownloadPartAsync(start, length);
         _currentStream = await _current.Content.ReadAsStreamAsync(cancellationToken);
         return true;
+    }
+
+    private async ValueTask<int> ReadCurrentStreamAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        idleCts.CancelAfter(TimeSpan.FromSeconds(PartReadIdleTimeoutSeconds));
+        try
+        {
+            return await _currentStream!.ReadAsync(buffer, idleCts.Token);
+        }
+        catch (OperationCanceledException ex)
+            when (!cancellationToken.IsCancellationRequested && !_cts.IsCancellationRequested)
+        {
+            throw new IOException($"夸克分片读取超过 {PartReadIdleTimeoutSeconds} 秒无数据", ex);
+        }
     }
 
     private async Task DisposeCurrentAsync()

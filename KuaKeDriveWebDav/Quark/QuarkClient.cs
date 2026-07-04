@@ -31,9 +31,13 @@ public class QuarkClient : IQuarkClient
     private const int DownloadConcurrency = 3;
     private const int DownloadPartSize = 4 * 1024 * 1024;
     private const int MaxUpstreamConcurrency = 12;
+    private const int PooledConnectionLifetimeMinutes = 10;
+    private const int PooledConnectionIdleMinutes = 2;
+    private const int ConnectTimeoutSeconds = 15;
 
     private readonly IHttpService _httpService;
     private readonly ICacheService _cacheService;
+    private readonly ILogger<QuarkClient> _logger;
     private readonly QuarkOptions _options;
 
     private CookieContainer _cookieContainer;
@@ -49,10 +53,16 @@ public class QuarkClient : IQuarkClient
     // 仅用于流式下载；列目录、取直链等小请求仍走 IHttpService。
     private HttpClient _httpClient;
 
-    public QuarkClient(IHttpService httpService, ICacheService cacheService, IOptions<QuarkOptions> options)
+    public QuarkClient(
+        IHttpService httpService,
+        ICacheService cacheService,
+        IOptions<QuarkOptions> options,
+        ILogger<QuarkClient> logger
+    )
     {
         _httpService = httpService;
         _cacheService = cacheService;
+        _logger = logger;
         _options = options.Value;
         _cookieContainer = new CookieContainer();
         _cookieFile = Path.IsPathRooted(_options.CookieFilePath)
@@ -102,13 +112,21 @@ public class QuarkClient : IQuarkClient
     )
     {
         var (start, length, hasRange) = ParseRange(rangeHeader, totalSize);
+        _logger.LogInformation(
+            "打开夸克下载 fid={Fid}, totalSize={TotalSize}, range={Range}, start={Start}, length={Length}",
+            fid,
+            totalSize,
+            string.IsNullOrEmpty(rangeHeader) ? "-" : rangeHeader,
+            start,
+            length
+        );
 
-        // 范围不超过单片或未开启并发：走单流；否则多片并发。
-        // 多片把整段范围按 PartSize 切片、Concurrency 路并发拉取后按序拼合，用多条上游连接
-        // 绕开夸克对单连接大文件的限速（参考 OpenList 夸克驱动 3 并发 × 10MB）
+        // 非 Range 小文件走单流；Range 请求统一走可重试的分片流，哪怕只有一片也能在 body 卡住时重开。
+        // 大范围把整段按 PartSize 切片、Concurrency 路并发拉取后按序拼合，用多条上游连接
+        // 绕开夸克对单连接大文件的限速（参考 OpenList 夸克驱动 3 并发 × 10MB）。
         long? rangeStart = hasRange ? start : null;
         long? rangeEnd = hasRange ? start + length - 1 : null;
-        if (length <= DownloadPartSize || DownloadConcurrency <= 1)
+        if ((!hasRange && length <= DownloadPartSize) || DownloadConcurrency <= 1)
             return await DownloadWithRetryAsync(
                 fid,
                 (url, token) => OpenDownloadByUrlAsync(url, rangeStart, rangeEnd, token),
@@ -123,6 +141,7 @@ public class QuarkClient : IQuarkClient
             length,
             DownloadPartSize,
             DownloadConcurrency,
+            _logger,
             ct
         );
         return BuildRangeResponse(stream, start, length, totalSize, hasRange);
@@ -193,13 +212,36 @@ public class QuarkClient : IQuarkClient
                     return resp;
 
                 var statusCode = resp.StatusCode;
+                _logger.LogWarning(
+                    "夸克下载响应异常，准备重试 fid={Fid}, statusCode={StatusCode}, requirePartialContent={RequirePartialContent}",
+                    fid,
+                    (int)statusCode,
+                    requirePartialContent
+                );
                 resp.Dispose();
                 throw new HttpRequestException($"夸克下载失败，状态码：{(int)statusCode}", null, statusCode);
             }
-            catch (HttpRequestException) when (!retried)
+            catch (HttpRequestException ex) when (!retried)
             {
                 retried = true;
+                _logger.LogWarning(ex, "夸克下载失败，清除直链缓存后重试 fid={Fid}", fid);
                 await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+            }
+            catch (OperationCanceledException ex) when (!retried && !ct.IsCancellationRequested)
+            {
+                retried = true;
+                _logger.LogWarning(ex, "夸克下载连接超时，清除直链缓存后重试 fid={Fid}", fid);
+                await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "夸克下载重试后仍失败 fid={Fid}", fid);
+                throw;
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogError(ex, "夸克下载连接超时，重试后仍失败 fid={Fid}", fid);
+                throw new HttpRequestException("夸克下载连接超时，重试后仍失败", ex);
             }
         }
     }
@@ -275,7 +317,17 @@ public class QuarkClient : IQuarkClient
     /// </summary>
     private HttpClient CreateHttpClient()
     {
-        var handler = new SocketsHttpHandler { CookieContainer = _cookieContainer };
+        var handler = new SocketsHttpHandler
+        {
+            CookieContainer = _cookieContainer,
+            MaxConnectionsPerServer = MaxUpstreamConcurrency,
+            ConnectTimeout = TimeSpan.FromSeconds(ConnectTimeoutSeconds),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(PooledConnectionLifetimeMinutes),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(PooledConnectionIdleMinutes),
+            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+        };
         if (HostApp.HostEnvironment.IsDevelopment())
             handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
@@ -344,6 +396,7 @@ public class QuarkClient : IQuarkClient
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
             _httpClient = CreateHttpClient(); // 重建下载客户端以绑定新 Cookie 容器（旧 client 交由 GC 回收）
             // 直链缓存（quark:dl:*）不主动清：ICacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
+            _logger.LogInformation("夸克 Cookie 已更新，下载客户端已重建");
         }
         finally
         {
@@ -403,6 +456,7 @@ public class QuarkClient : IQuarkClient
     /// </summary>
     private async Task<string> FetchDownloadUrlAsync(string fid)
     {
+        _logger.LogInformation("获取夸克下载直链 fid={Fid}", fid);
         var body = new { fids = new[] { fid } };
         var resp =
             (
@@ -464,7 +518,15 @@ public class QuarkClient : IQuarkClient
     {
         await PersistCookieIfChangedAsync();
         if (resp.Code != 0)
+        {
+            _logger.LogWarning(
+                "夸克接口返回异常 code={Code}, message={Message}, operation={Operation}",
+                resp.Code,
+                resp.Message,
+                errorMessage
+            );
             throw new InvalidOperationException($"{errorMessage}：{resp.Message}");
+        }
     }
 
     /// <summary>

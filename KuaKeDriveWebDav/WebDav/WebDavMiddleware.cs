@@ -9,7 +9,7 @@ namespace KuaKeDriveWebDav.WebDav;
 /// <summary>
 /// WebDAV 终端中间件：分发 OPTIONS / PROPFIND / GET / HEAD（只读）以及本地存储的写方法
 /// </summary>
-public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolver)
+public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolver, ILogger<WebDavMiddleware> logger)
 {
     private const string ReadMethods = "OPTIONS, PROPFIND, GET, HEAD";
     private const string WriteMethods = "PUT, MKCOL, DELETE, MOVE, COPY";
@@ -78,23 +78,42 @@ public class WebDavMiddleware(RequestDelegate next, IWebDavStoreResolver resolve
         }
         catch (DirectoryNotFoundException ex)
         {
+            logger.LogWarning(ex, "WebDAV 目录不存在 method={Method}, path={Path}", method, context.Request.Path);
             await WriteErrorAsync(context, StatusCodes.Status409Conflict, ex.Message);
         }
         catch (FileNotFoundException ex)
         {
+            logger.LogWarning(ex, "WebDAV 文件不存在 method={Method}, path={Path}", method, context.Request.Path);
             await WriteErrorAsync(context, StatusCodes.Status404NotFound, ex.Message);
         }
         catch (WebDavRangeNotSatisfiableException ex)
         {
+            logger.LogWarning(
+                ex,
+                "WebDAV Range 不可满足 method={Method}, path={Path}, range={Range}",
+                method,
+                context.Request.Path,
+                context.Request.Headers.Range.ToString()
+            );
             context.Response.Headers.ContentRange = $"bytes */{ex.TotalSize}";
             await WriteErrorAsync(context, StatusCodes.Status416RangeNotSatisfiable, ex.Message);
         }
         catch (InvalidOperationException ex)
         {
+            logger.LogWarning(ex, "WebDAV 操作失败 method={Method}, path={Path}", method, context.Request.Path);
             await WriteErrorAsync(context, StatusCodes.Status409Conflict, ex.Message);
         }
         catch (Exception ex)
         {
+            logger.LogError(
+                ex,
+                "WebDAV 请求失败 method={Method}, path={Path}, range={Range}",
+                method,
+                context.Request.Path,
+                context.Request.Headers.Range.ToString()
+            );
+            if (context.Response.HasStarted)
+                throw;
             await WriteErrorAsync(context, StatusCodes.Status502BadGateway, ex.Message);
         }
     }
