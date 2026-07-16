@@ -12,6 +12,11 @@ await HostApp.StartWebAppAsync(
     [typeof(AssemblyMark).Assembly],
     async builder =>
     {
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.Limits.MaxRequestBodySize = 500L * 1024 * 1024;
+        });
+
         // 强类型配置
         builder.Services.Configure<QuarkOptions>(builder.Configuration.GetSection("Quark"));
         builder.Services.Configure<WebDavOptions>(builder.Configuration.GetSection("WebDav"));
