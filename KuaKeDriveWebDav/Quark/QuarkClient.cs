@@ -458,9 +458,10 @@ public class QuarkClient : IQuarkClient
     {
         _logger.LogInformation("获取夸克下载直链 fid={Fid}", fid);
         var body = new { fids = new[] { fid } };
+        using var httpSession = _httpService.CreateCookieSession(_cookieContainer);
         var resp =
             (
-                await _httpService.RequestAsync<QuarkDownloadResp>(
+                await httpSession.RequestAsync<QuarkDownloadResp>(
                     BuildRequest("/file/download", HttpMethod.Post, null, body)
                 )
             ) ?? throw new InvalidOperationException("夸克接口返回空响应");
@@ -474,6 +475,7 @@ public class QuarkClient : IQuarkClient
     private async Task<List<QuarkFile>> FetchListAsync(string parentFid, CancellationToken ct)
     {
         var result = new List<QuarkFile>();
+        using var httpSession = _httpService.CreateCookieSession(_cookieContainer);
         const int size = 100;
         var page = 1;
         while (true)
@@ -489,11 +491,8 @@ public class QuarkClient : IQuarkClient
                 ["fetch_risk_file_name"] = "1",
             };
             var resp =
-                (
-                    await _httpService.RequestAsync<QuarkSortResp>(
-                        BuildRequest("/file/sort", HttpMethod.Get, query, null)
-                    )
-                ) ?? throw new InvalidOperationException("夸克接口返回空响应");
+                (await httpSession.RequestAsync<QuarkSortResp>(BuildRequest("/file/sort", HttpMethod.Get, query, null)))
+                ?? throw new InvalidOperationException("夸克接口返回空响应");
             await EnsureSuccessAsync(resp, "夸克列目录失败");
             if (resp.Data?.List is not null)
             {
@@ -530,7 +529,7 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <summary>
-    /// 构造夸克 API 请求（统一带 Cookie 容器、Accept/Referer/UA、pr/fr 查询参数）
+    /// 构造夸克 API 请求（统一带 Accept/Referer/UA、pr/fr 查询参数）
     /// </summary>
     private HttpRequestModel BuildRequest(
         string pathname,
@@ -552,7 +551,6 @@ public class QuarkClient : IQuarkClient
         {
             UriBuilder = ub,
             HttpMethod = method,
-            CookieContainer = _cookieContainer,
             ResponseContentType = "application/json",
             RetryCount = 2,
             Heads = new Dictionary<string, string>
