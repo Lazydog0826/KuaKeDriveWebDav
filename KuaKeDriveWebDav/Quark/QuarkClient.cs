@@ -36,7 +36,8 @@ public class QuarkClient : IQuarkClient
     private const int ConnectTimeoutSeconds = 15;
 
     private readonly IHttpService _httpService;
-    private readonly ICacheService _cacheService;
+    private readonly IRedisCacheService _redisCacheService;
+    private readonly CacheConfiguration _cacheConfiguration;
     private readonly ILogger<QuarkClient> _logger;
     private readonly QuarkOptions _options;
 
@@ -55,13 +56,15 @@ public class QuarkClient : IQuarkClient
 
     public QuarkClient(
         IHttpService httpService,
-        ICacheService cacheService,
+        IRedisCacheService redisCacheService,
+        IOptions<CacheConfiguration> cacheOptions,
         IOptions<QuarkOptions> options,
         ILogger<QuarkClient> logger
     )
     {
         _httpService = httpService;
-        _cacheService = cacheService;
+        _redisCacheService = redisCacheService;
+        _cacheConfiguration = cacheOptions.Value;
         _logger = logger;
         _options = options.Value;
         _cookieContainer = new CookieContainer();
@@ -96,7 +99,7 @@ public class QuarkClient : IQuarkClient
     /// <inheritdoc />
     public Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default)
     {
-        return _cacheService.GetOrCreateCacheAsync(
+        return _redisCacheService.GetOrCreateCacheAsync(
             $"quark:children:{fid}",
             () => FetchListAsync(fid, ct),
             TimeSpan.FromMinutes(_options.ListCacheMinutes)
@@ -225,13 +228,13 @@ public class QuarkClient : IQuarkClient
             {
                 retried = true;
                 _logger.LogWarning(ex, "夸克下载失败，清除直链缓存后重试 fid={Fid}", fid);
-                await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+                await _redisCacheService.DeleteCacheAsync(_cacheConfiguration.Wrapped(DownloadUrlKey(fid)));
             }
             catch (OperationCanceledException ex) when (!retried && !ct.IsCancellationRequested)
             {
                 retried = true;
                 _logger.LogWarning(ex, "夸克下载连接超时，清除直链缓存后重试 fid={Fid}", fid);
-                await _cacheService.DeleteCacheAsync(DownloadUrlKey(fid));
+                await _redisCacheService.DeleteCacheAsync(_cacheConfiguration.Wrapped(DownloadUrlKey(fid)));
             }
             catch (HttpRequestException ex)
             {
@@ -247,10 +250,10 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <summary>
-    /// 按 fid 获取下载直链，经 ICacheService 缓存（TTL 内复用，避免并发 Range 请求逐个回源）
+    /// 按 fid 获取下载直链，经 IRedisCacheService 缓存（TTL 内复用，避免并发 Range 请求逐个回源）
     /// </summary>
     private Task<string> GetDownloadUrlAsync(string fid) =>
-        _cacheService.GetOrCreateCacheAsync(
+        _redisCacheService.GetOrCreateCacheAsync(
             DownloadUrlKey(fid),
             () => FetchDownloadUrlAsync(fid),
             TimeSpan.FromMinutes(_options.DownloadUrlCacheMinutes)
@@ -395,7 +398,7 @@ public class QuarkClient : IQuarkClient
             await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
             _httpClient = CreateHttpClient(); // 重建下载客户端以绑定新 Cookie 容器（旧 client 交由 GC 回收）
-            // 直链缓存（quark:dl:*）不主动清：ICacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
+            // 直链缓存（quark:dl:*）不主动清：IRedisCacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
             _logger.LogInformation("夸克 Cookie 已更新，下载客户端已重建");
         }
         finally
