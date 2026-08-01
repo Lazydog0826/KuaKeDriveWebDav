@@ -4,7 +4,7 @@ using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
-using SeventyTwo.InfraKit.Core.App;
+using SeventyTwo.InfraKit.Core;
 using SeventyTwo.InfraKit.Http;
 
 await HostApp.StartWebAppAsync(
@@ -37,6 +37,7 @@ await HostApp.StartWebAppAsync(
     async app =>
     {
         var opt = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value;
+        app.UseRouting();
 
         // Cookie 更新接口：独立分支，复用 WebDAV 的 Basic Auth 认证
         app.Map(

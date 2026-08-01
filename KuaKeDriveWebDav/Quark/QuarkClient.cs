@@ -4,7 +4,7 @@ using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
 using SeventyTwo.InfraKit.Cache;
-using SeventyTwo.InfraKit.Core.App;
+using SeventyTwo.InfraKit.Core;
 using SeventyTwo.InfraKit.Http;
 
 // ReSharper disable MemberCanBeMadeStatic.Local
@@ -462,12 +462,12 @@ public class QuarkClient : IQuarkClient
         _logger.LogInformation("获取夸克下载直链 fid={Fid}", fid);
         var body = new { fids = new[] { fid } };
         using var httpSession = _httpService.CreateCookieSession(_cookieContainer);
+        using var response = await httpSession.RequestAsync(
+            BuildRequest("/file/download", HttpMethod.Post, null, body)
+        );
         var resp =
-            (
-                await httpSession.RequestAsync<QuarkDownloadResp>(
-                    BuildRequest("/file/download", HttpMethod.Post, null, body)
-                )
-            ) ?? throw new InvalidOperationException("夸克接口返回空响应");
+            await response.Content.ReadFromJsonAsync<QuarkDownloadResp>()
+            ?? throw new InvalidOperationException("夸克接口返回空响应");
         await EnsureSuccessAsync(resp, "获取夸克下载链接失败");
         return resp.Data?.FirstOrDefault()?.DownloadUrl ?? throw new InvalidOperationException("夸克未返回下载链接");
     }
@@ -493,8 +493,11 @@ public class QuarkClient : IQuarkClient
                 ["fetch_all_file"] = "1",
                 ["fetch_risk_file_name"] = "1",
             };
+            using var response = await httpSession.RequestAsync(
+                BuildRequest("/file/sort", HttpMethod.Get, query, null)
+            );
             var resp =
-                (await httpSession.RequestAsync<QuarkSortResp>(BuildRequest("/file/sort", HttpMethod.Get, query, null)))
+                await response.Content.ReadFromJsonAsync<QuarkSortResp>(ct)
                 ?? throw new InvalidOperationException("夸克接口返回空响应");
             await EnsureSuccessAsync(resp, "夸克列目录失败");
             if (resp.Data?.List is not null)
@@ -564,7 +567,7 @@ public class QuarkClient : IQuarkClient
             },
         };
         if (body is not null)
-            model.HttpContent = JsonContent.Create(body);
+            model.HttpContentFactory = () => JsonContent.Create(body);
         return model;
     }
 
