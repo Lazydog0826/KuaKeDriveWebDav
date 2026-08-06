@@ -1,0 +1,120 @@
+# 工作流名称，会显示在 GitHub 仓库的 Actions 页面
+name: Build And Push Docker Image
+
+# 定义工作流的触发条件
+on:
+  # 当代码或 Git Tag 被推送时触发
+  push:
+    # 监听指定分支
+    branches:
+      # 推送到 main 分支时触发
+      - main
+
+    # 监听 Git Tag
+    tags:
+      # 推送任意名称的 Tag 时触发，例如 v1.0.0、1.0.0、test
+      - "*"
+
+  # 允许在 GitHub Actions 页面手动执行该工作流
+  workflow_dispatch:
+
+# 设置当前工作流对 GitHub 仓库的访问权限
+permissions:
+  # 只允许读取仓库代码
+  contents: read
+
+# 定义工作流中需要执行的任务
+jobs:
+  # Job 的唯一标识，可以自定义名称
+  docker:
+    # 使用 GitHub 提供的最新版 Ubuntu 虚拟机执行任务
+    runs-on: ubuntu-latest
+
+    # 定义该 Job 需要依次执行的步骤
+    steps:
+      # 第一步：将当前仓库代码下载到 Ubuntu Runner
+      - name: Checkout
+
+        # 使用 GitHub 官方提供的代码检出 Action
+        # 相当于把当前分支或 Tag 的代码拉取到执行机器
+        uses: actions/checkout@v6
+
+      # 第二步：初始化 Docker Buildx
+      - name: Setup Docker Buildx
+
+        # 使用 Docker 官方提供的 Buildx 初始化 Action
+        # Buildx 支持构建缓存、多平台镜像和 BuildKit
+        uses: docker/setup-buildx-action@v4
+
+      # 第三步：登录 Docker Hub
+      - name: Login To Docker Hub
+
+        # 使用 Docker 官方提供的镜像仓库登录 Action
+        uses: docker/login-action@v4
+
+        # 向 login-action 传递登录参数
+        with:
+          # 从 GitHub Actions Variables 中读取 Docker Hub 用户名
+          # 定义位置：
+          # Settings → Secrets and variables → Actions → Variables
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+
+          # 从 GitHub Actions Secrets 中读取 Docker Hub Access Token
+          # 定义位置：
+          # Settings → Secrets and variables → Actions → Secrets
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 第四步：根据分支、Tag 和 Commit 生成 Docker 镜像标签
+      - name: Generate Docker Metadata
+
+        # 为当前步骤设置 ID
+        # 后续可以通过 steps.meta.outputs 读取该步骤的输出
+        id: meta
+
+        # 使用 Docker 官方提供的镜像元数据生成 Action
+        uses: docker/metadata-action@v6
+
+        # 向 metadata-action 传递配置
+        with:
+          # 指定完整的 Docker 镜像名称
+          # 最终格式：DockerHub用户名/镜像仓库名
+          # 例如：meicai/my-api
+          images: ${{ vars.IMAGE_NAME }}
+
+          # 定义需要生成的镜像 Tag
+          tags: latest
+
+      # 第五步：根据 Dockerfile 构建镜像并推送到 Docker Hub
+      - name: Build And Push Docker Image
+
+        # 使用 Docker 官方提供的镜像构建和推送 Action
+        uses: docker/build-push-action@v7
+
+        # 向 build-push-action 传递构建参数
+        with:
+          # Docker 构建上下文
+          # "." 表示当前仓库根目录
+          # 构建时 Dockerfile 可以访问该目录下的文件
+          context: .
+
+          # 指定 Dockerfile 的位置
+          # 当前表示仓库根目录下的 Dockerfile
+          file: ./Dockerfile
+
+          # 构建成功后推送到 Docker Hub
+          # 如果设置为 false，则只构建，不推送
+          push: true
+
+          # 使用 metadata-action 生成的所有镜像标签
+          tags: ${{ steps.meta.outputs.tags }}
+
+          # 使用 metadata-action 生成的镜像元数据标签
+          # 例如源码地址、Git Commit、构建时间等 OCI Labels
+          labels: ${{ steps.meta.outputs.labels }}
+
+          # 从 GitHub Actions 缓存中读取之前的 Docker 构建缓存
+          cache-from: type=gha
+
+          # 将本次构建产生的缓存保存到 GitHub Actions
+          # mode=max 表示尽可能保存所有中间构建层
+          cache-to: type=gha,mode=max
