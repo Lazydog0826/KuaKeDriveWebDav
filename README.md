@@ -122,7 +122,7 @@ dotnet build KuaKeDriveWebDav.sln
 ```
 
 - 目标框架 `net10.0`，需 .NET 10 SDK。
-- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.8.3）之上，依赖其 `HostApp`、`IHttpService` 与 Autofac 自动注册；缓存使用 ASP.NET Core 进程内内存缓存。
+- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.9.0）之上，使用 `WebApplication` 显式创建宿主，并依赖其 `IHttpService` 与 Autofac 自动注册；缓存使用 ASP.NET Core 进程内内存缓存。
 - 本地运行前需准备 `cookie/quark-cookie.txt`（夸克登录态）与 `local-root/` 目录。
 
 ## 架构

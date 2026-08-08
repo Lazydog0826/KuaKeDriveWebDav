@@ -5,7 +5,6 @@ using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
-using SeventyTwo.InfraKit.Core;
 using SeventyTwo.InfraKit.Http;
 
 // ReSharper disable MemberCanBeMadeStatic.Local
@@ -39,6 +38,7 @@ public class QuarkClient : IQuarkClient
     private readonly IHttpService _httpService;
     private readonly IMemoryCache _memoryCache;
     private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _cacheLoads = new();
+    private readonly IHostEnvironment _hostEnvironment;
     private readonly ILogger<QuarkClient> _logger;
     private readonly QuarkOptions _options;
 
@@ -58,12 +58,14 @@ public class QuarkClient : IQuarkClient
     public QuarkClient(
         IHttpService httpService,
         IMemoryCache memoryCache,
+        IHostEnvironment hostEnvironment,
         IOptions<QuarkOptions> options,
         ILogger<QuarkClient> logger
     )
     {
         _httpService = httpService;
         _memoryCache = memoryCache;
+        _hostEnvironment = hostEnvironment;
         _logger = logger;
         _options = options.Value;
         _cookieContainer = new CookieContainer();
@@ -373,7 +375,7 @@ public class QuarkClient : IQuarkClient
             KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
             KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
         };
-        if (HostApp.HostEnvironment.IsDevelopment())
+        if (_hostEnvironment.IsDevelopment())
             handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
         return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
