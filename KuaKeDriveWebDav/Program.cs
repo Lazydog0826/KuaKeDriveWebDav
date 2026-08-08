@@ -3,7 +3,6 @@ using KuaKeDriveWebDav.Api;
 using KuaKeDriveWebDav.WebDav;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
-using SeventyTwo.InfraKit.Cache;
 using SeventyTwo.InfraKit.Core;
 using SeventyTwo.InfraKit.Http;
 
@@ -24,7 +23,7 @@ await HostApp.StartWebAppAsync(
 
         // Http 客户端（调用夸克接口）+ 内存缓存（缓存目录列表）
         builder.Services.AddHttpService();
-        builder.Services.AddCacheService();
+        builder.Services.AddMemoryCache();
 
         // Autofac 自动扫描注册 QuarkClient（标记了 [AutofacDependency]）
         builder.Host.UseAutofac(containerBuilder =>

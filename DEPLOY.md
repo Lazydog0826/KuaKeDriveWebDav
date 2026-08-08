@@ -86,10 +86,6 @@ services:
     "Local": {
         "RootPath": "local-root"
     },
-    "CacheConfiguration": {
-        "IsUseRedis": false,
-        "KeyNamespace": "KuaKeDriveWebDav"
-    },
     "Logging": {
         "LogLevel": {
             "Default": "Information",
@@ -124,13 +120,6 @@ services:
 | 参数 | 含义 | 默认值 | 说明 |
 |---|---|---|---|
 | `RootPath` | 本地存储根目录（容器内相对路径） | `local-root` | 对应 `docker-compose.yaml` 挂载的 `./local-root`，一般不改。 |
-
-**`CacheConfiguration` 节（缓存）**
-
-| 参数 | 含义 | 默认值 | 说明 |
-|---|---|---|---|
-| `IsUseRedis` | 是否用 Redis 做缓存 | `false` | `false` 用进程内存缓存（单机足够）；`true` 需另外接 Redis。 |
-| `KeyNamespace` | 缓存 key 前缀 | `KuaKeDriveWebDav` | 单机忽略；多服务共用同一 Redis 时区分命名空间。 |
 
 ---
 

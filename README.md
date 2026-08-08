@@ -73,10 +73,6 @@ docker build -t kuake-drive-webdav .
     },
     "Local": {
         "RootPath": "local-root"
-    },
-    "CacheConfiguration": {
-        "IsUseRedis": false,
-        "KeyNamespace": "KuaKeDriveWebDav"
     }
 }
 ```
@@ -91,7 +87,6 @@ docker build -t kuake-drive-webdav .
 | `WebDav` | `LocalPrefix` | 本地路由前缀 | `/dav/local` |
 | `WebDav` | `Username` / `Password` | Basic Auth 凭据（两组路由共用） | — |
 | `Local` | `RootPath` | 本地存储根目录（相对当前工作目录） | `local-root` |
-| `CacheConfiguration` | `IsUseRedis` | `false` 用内存缓存，`true` 用 Redis | `false` |
 
 ## 更新夸克 Cookie
 
@@ -127,7 +122,7 @@ dotnet build KuaKeDriveWebDav.sln
 ```
 
 - 目标框架 `net10.0`，需 .NET 10 SDK。
-- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.0.2）之上，依赖其 `HostApp`、`IHttpService`、`ICacheService` 与 Autofac 自动注册。
+- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.8.3）之上，依赖其 `HostApp`、`IHttpService` 与 Autofac 自动注册；缓存使用 ASP.NET Core 进程内内存缓存。
 - 本地运行前需准备 `cookie/quark-cookie.txt`（夸克登录态）与 `local-root/` 目录。
 
 ## 架构
@@ -139,7 +134,7 @@ dotnet build KuaKeDriveWebDav.sln
 ```
 
 - **`IWebDavStore`**（`WebDav/IWebDavStore.cs`）：数据源抽象，`WebDavMiddleware` 不直接依赖夸克。`WebDavNode`（record）统一节点模型，`WebDavCapabilities`（`Read` / `Write`）驱动 OPTIONS 的 `Allow` 头与写方法可用性，`WebDavStoreResolver` 按请求 `PathBase` 解析当前 store。
-- **`QuarkClient`**（`Quark/`）：Singleton，持有共享 `CookieContainer`，跨请求维持登录态。目录列表与下载直链经 `ICacheService` 缓存；直链失效时自动清缓存重取。
+- **`QuarkClient`**（`Quark/`）：Singleton，持有共享 `CookieContainer`，跨请求维持登录态。目录列表与下载直链经 `IMemoryCache` 缓存；直链失效时自动清缓存重取。
 - **`LocalWebDavStore`**（`Local/`）：实现可读写 `IWebDavStore`，带路径越界校验（拒绝 `../`）、Range 解析与弱 ETag。
 
 更详细的设计说明见 [`CLAUDE.md`](./CLAUDE.md)。

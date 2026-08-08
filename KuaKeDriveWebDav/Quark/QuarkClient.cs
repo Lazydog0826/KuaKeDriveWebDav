@@ -1,9 +1,10 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using KuaKeDriveWebDav.WebDav;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using SeventyTwo.InfraKit.Autofac;
-using SeventyTwo.InfraKit.Cache;
 using SeventyTwo.InfraKit.Core;
 using SeventyTwo.InfraKit.Http;
 
@@ -36,8 +37,8 @@ public class QuarkClient : IQuarkClient
     private const int ConnectTimeoutSeconds = 15;
 
     private readonly IHttpService _httpService;
-    private readonly IRedisCacheService _redisCacheService;
-    private readonly CacheConfiguration _cacheConfiguration;
+    private readonly IMemoryCache _memoryCache;
+    private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _cacheLoads = new();
     private readonly ILogger<QuarkClient> _logger;
     private readonly QuarkOptions _options;
 
@@ -56,15 +57,13 @@ public class QuarkClient : IQuarkClient
 
     public QuarkClient(
         IHttpService httpService,
-        IRedisCacheService redisCacheService,
-        IOptions<CacheConfiguration> cacheOptions,
+        IMemoryCache memoryCache,
         IOptions<QuarkOptions> options,
         ILogger<QuarkClient> logger
     )
     {
         _httpService = httpService;
-        _redisCacheService = redisCacheService;
-        _cacheConfiguration = cacheOptions.Value;
+        _memoryCache = memoryCache;
         _logger = logger;
         _options = options.Value;
         _cookieContainer = new CookieContainer();
@@ -99,10 +98,11 @@ public class QuarkClient : IQuarkClient
     /// <inheritdoc />
     public Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default)
     {
-        return _redisCacheService.GetOrCreateCacheAsync(
+        return GetOrCreateCacheAsync(
             $"quark:children:{fid}",
-            () => FetchListAsync(fid, ct),
-            TimeSpan.FromMinutes(_options.ListCacheMinutes)
+            () => FetchListAsync(fid, CancellationToken.None),
+            TimeSpan.FromMinutes(_options.ListCacheMinutes),
+            ct
         );
     }
 
@@ -228,13 +228,13 @@ public class QuarkClient : IQuarkClient
             {
                 retried = true;
                 _logger.LogWarning(ex, "夸克下载失败，清除直链缓存后重试 fid={Fid}", fid);
-                await _redisCacheService.DeleteCacheAsync(_cacheConfiguration.Wrapped(DownloadUrlKey(fid)));
+                _memoryCache.Remove(DownloadUrlKey(fid));
             }
             catch (OperationCanceledException ex) when (!retried && !ct.IsCancellationRequested)
             {
                 retried = true;
                 _logger.LogWarning(ex, "夸克下载连接超时，清除直链缓存后重试 fid={Fid}", fid);
-                await _redisCacheService.DeleteCacheAsync(_cacheConfiguration.Wrapped(DownloadUrlKey(fid)));
+                _memoryCache.Remove(DownloadUrlKey(fid));
             }
             catch (HttpRequestException ex)
             {
@@ -250,14 +250,56 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <summary>
-    /// 按 fid 获取下载直链，经 IRedisCacheService 缓存（TTL 内复用，避免并发 Range 请求逐个回源）
+    /// 按 fid 获取下载直链，经本地内存缓存复用
     /// </summary>
     private Task<string> GetDownloadUrlAsync(string fid) =>
-        _redisCacheService.GetOrCreateCacheAsync(
+        GetOrCreateCacheAsync(
             DownloadUrlKey(fid),
             () => FetchDownloadUrlAsync(fid),
             TimeSpan.FromMinutes(_options.DownloadUrlCacheMinutes)
         );
+
+    private async Task<T> GetOrCreateCacheAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        TimeSpan expiration,
+        CancellationToken cancellationToken = default
+    )
+        where T : notnull
+    {
+        if (_memoryCache.TryGetValue(key, out T? cached))
+            return cached!;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var load = _cacheLoads.GetOrAdd(
+            key,
+            _ =>
+            {
+                Lazy<Task<object>>? createdLoad = null;
+                var load1 = createdLoad;
+                createdLoad = new Lazy<Task<object>>(
+                    async () =>
+                    {
+                        try
+                        {
+                            if (_memoryCache.TryGetValue(key, out T? current))
+                                return current!;
+                            var created = await factory();
+                            _memoryCache.Set(key, created, expiration);
+                            return created;
+                        }
+                        finally
+                        {
+                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, load1!));
+                        }
+                    },
+                    LazyThreadSafetyMode.ExecutionAndPublication
+                );
+                return createdLoad;
+            }
+        );
+        return (T)await load.Value.WaitAsync(cancellationToken);
+    }
 
     /// <summary>直链缓存 key</summary>
     private string DownloadUrlKey(string fid) => $"quark:dl:{fid}";
@@ -398,7 +440,7 @@ public class QuarkClient : IQuarkClient
             await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
             _httpClient = CreateHttpClient(); // 重建下载客户端以绑定新 Cookie 容器（旧 client 交由 GC 回收）
-            // 直链缓存（quark:dl:*）不主动清：IRedisCacheService 无批量失效，依赖 TTL 与 OpenDownloadAsync 失败重试自愈
+            // 直链缓存（quark:dl:*）依赖 TTL 与 OpenDownloadAsync 失败重试自愈
             _logger.LogInformation("夸克 Cookie 已更新，下载客户端已重建");
         }
         finally
@@ -455,7 +497,7 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <summary>
-    /// 调用 POST /file/download 获取单文件下载直链（供 GetOrCreateCacheAsync 的工厂回调使用）
+    /// 调用 POST /file/download 获取单文件下载直链
     /// </summary>
     private async Task<string> FetchDownloadUrlAsync(string fid)
     {
