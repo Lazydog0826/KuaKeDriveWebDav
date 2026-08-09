@@ -20,14 +20,15 @@
 | `/dav/kuake` | 夸克网盘 | 只读 | `OPTIONS`、`PROPFIND`、`GET`、`HEAD` |
 | `/dav/local` | 本地文件系统 | 读写 | 上述全部 + `PUT`、`MKCOL`、`DELETE`、`MOVE`、`COPY` |
 | `/api/quark/cookie` | — | 管理 | `POST`（热更新夸克 Cookie） |
+| `/health` | — | 健康检查 | 无需认证 |
 
-三个路由共用同一组 Basic Auth 凭据。`OPTIONS` 探测请求放行免认证。
+两个 WebDAV 路由与 Cookie 更新接口共用同一组 Basic Auth 凭据，`OPTIONS` 探测请求放行免认证；健康检查接口无需认证。
 
 ## 快速部署（Docker）
 
 镜像自包含，无运行时依赖。推荐使用 `docker-compose`，会自动挂载配置、Cookie 与本地存储目录。
 
-1. 在部署目录准备一份 `appsettings.json`（可从仓库根的样例改写，**务必修改 `Username` / `Password` 为强口令**）。
+1. 将仓库中的 `KuaKeDriveWebDav/appsettings.json` 复制到部署目录根部并按需修改，**务必将 `Username` / `Password` 改为强口令**。
 2. 创建挂载所需的目录：`cookie`（夸克登录态持久化）、`local-root`（本地存储根目录）。
 3. 启动服务：
 
@@ -90,7 +91,7 @@ docker build -t kuake-drive-webdav .
 
 ## 更新夸克 Cookie
 
-夸克 Cookie 会过期。服务提供热更新接口，更新后立即校验有效性并持久化到磁盘：
+夸克 Cookie 会过期。服务提供热更新接口：收到新 Cookie 后会先替换当前登录态并持久化到磁盘，再调用夸克接口校验有效性：
 
 ```bash
 curl -u admin:123456 \
@@ -101,27 +102,29 @@ curl -u admin:123456 \
 
 - 请求体为**纯文本**的完整 Cookie 字符串（浏览器抓取自 `pan.quark.cn` 登录态）。
 - 成功返回 `200` 与提示文案；Cookie 无效返回 `400` 与错误原因。
+- 校验失败不会自动恢复旧 Cookie；无效 Cookie 仍会保留在内存和持久化文件中，需要重新提交有效 Cookie。
 
 ## WebDAV 客户端接入
 
 以 RaiDrive / Cyberduck 等客户端为例，按以下参数连接：
 
 - **夸克网盘（只读）**：地址 `http://<host>:8080/dav/kuake`，账号密码为 `WebDav` 配置的凭据。
-- **本地存储（读写）**：地址 `http://<host>:8080/dav/local`，账号密码同上。
+- **本地存储（读写）**：地址 `http://<host>:8080/dav/local`，账号密码同上；单次上传请求体上限为 500 MiB。
 
 生产环境建议在服务前置反向代理（如 Caddy / Nginx）终结 TLS，对外仅暴露 HTTPS。
 
 ## 本地开发
 
 ```powershell
-# 运行（监听 appsettings.json 的 Urls，默认 http://localhost:8080）
-dotnet run --project KuaKeDriveWebDav
+# 运行并显式监听 http://localhost:8080
+dotnet run --project KuaKeDriveWebDav --urls http://localhost:8080
 
 # 构建
 dotnet build KuaKeDriveWebDav.sln
 ```
 
 - 目标框架 `net10.0`，需 .NET 10 SDK。
+- 项目配置未指定监听地址；若不传 `--urls` 且没有环境变量等外部配置，Kestrel 默认监听 `http://localhost:5000`。
 - 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.9.0）之上，使用 `WebApplication` 显式创建宿主，并依赖其 `IHttpService` 与 Autofac 自动注册；缓存使用 ASP.NET Core 进程内内存缓存。
 - 本地运行前需准备 `cookie/quark-cookie.txt`（夸克登录态）与 `local-root/` 目录。
 
@@ -137,4 +140,6 @@ dotnet build KuaKeDriveWebDav.sln
 - **`QuarkClient`**（`Quark/`）：Singleton，持有共享 `CookieContainer`，跨请求维持登录态。目录列表与下载直链经 `IMemoryCache` 缓存；直链失效时自动清缓存重取。
 - **`LocalWebDavStore`**（`Local/`）：实现可读写 `IWebDavStore`，带路径越界校验（拒绝 `../`）、Range 解析与弱 ETag。
 
-更详细的设计说明见 [`CLAUDE.md`](./CLAUDE.md)。
+## 开源协议
+
+本项目采用 [MIT License](./LICENSE) 开源。
