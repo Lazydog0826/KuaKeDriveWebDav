@@ -271,6 +271,7 @@ public class QuarkClient : IQuarkClient
             _ =>
             {
                 Lazy<Task<object>> createdLoad = null!;
+                var load1 = createdLoad;
                 createdLoad = new Lazy<Task<object>>(
                     async () =>
                     {
@@ -284,7 +285,7 @@ public class QuarkClient : IQuarkClient
                         }
                         finally
                         {
-                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, createdLoad));
+                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, load1));
                         }
                     },
                     LazyThreadSafetyMode.ExecutionAndPublication
