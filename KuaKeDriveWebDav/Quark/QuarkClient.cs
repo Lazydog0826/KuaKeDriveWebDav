@@ -98,15 +98,8 @@ public class QuarkClient : IQuarkClient
     }
 
     /// <inheritdoc />
-    public Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default)
-    {
-        return GetOrCreateCacheAsync(
-            $"quark:children:{fid}",
-            () => FetchListAsync(fid, CancellationToken.None),
-            TimeSpan.FromMinutes(_options.ListCacheMinutes),
-            ct
-        );
-    }
+    public Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default) =>
+        FetchListAsync(fid, ct);
 
     /// <inheritdoc />
     public async Task<HttpResponseMessage> OpenDownloadAsync(
@@ -277,8 +270,7 @@ public class QuarkClient : IQuarkClient
             key,
             _ =>
             {
-                Lazy<Task<object>>? createdLoad = null;
-                var load1 = createdLoad;
+                Lazy<Task<object>> createdLoad = null!;
                 createdLoad = new Lazy<Task<object>>(
                     async () =>
                     {
@@ -292,7 +284,7 @@ public class QuarkClient : IQuarkClient
                         }
                         finally
                         {
-                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, load1!));
+                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, createdLoad));
                         }
                     },
                     LazyThreadSafetyMode.ExecutionAndPublication

@@ -17,7 +17,7 @@ builder.Services.Configure<QuarkOptions>(builder.Configuration.GetSection("Quark
 builder.Services.Configure<WebDavOptions>(builder.Configuration.GetSection("WebDav"));
 builder.Services.Configure<LocalOptions>(builder.Configuration.GetSection("Local"));
 
-// Http 客户端（调用夸克接口）+ 内存缓存（缓存目录列表）
+// Http 客户端（调用夸克接口）+ 内存缓存（缓存下载直链）
 builder.Services.AddHttpService(builder.Environment.IsDevelopment());
 builder.Services.AddMemoryCache();
 

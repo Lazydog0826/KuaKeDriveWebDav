@@ -74,7 +74,6 @@ services:
     "Quark": {
         "CookieFilePath": "cookie/quark-cookie.txt",
         "RootPath": "/",
-        "ListCacheMinutes": 2,
         "DownloadUrlCacheMinutes": 10
     },
     "WebDav": {
@@ -103,7 +102,6 @@ services:
 |---|---|---|---|
 | `CookieFilePath` | 夸克 Cookie 持久化文件路径（容器内相对路径） | `cookie/quark-cookie.txt` | 一般不改。改了要同步改 `docker-compose.yaml` 的挂载。 |
 | `RootPath` | 暴露给 WebDAV 的夸克起始目录 | `/`（夸克根目录） | 只想把某个子目录当根展示时填，如 `/我的视频`。 |
-| `ListCacheMinutes` | 目录列表缓存分钟数 | `2` | 内容更新不及时可调小；想省夸克接口调用可调大。 |
 | `DownloadUrlCacheMinutes` | 下载直链缓存分钟数 | `10` | 夸克直链会过期，太大可能偶尔下载失败（服务会自动重试一次），保持默认即可。 |
 
 **`WebDav` 节（访问入口与认证，最重要）**

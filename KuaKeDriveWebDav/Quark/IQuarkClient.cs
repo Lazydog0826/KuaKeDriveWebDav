@@ -11,7 +11,7 @@ public interface IQuarkClient
     Task<QuarkFile?> GetByPathAsync(string webDavPath, CancellationToken ct = default);
 
     /// <summary>
-    /// 列出指定 fid 目录的直接子项（带缓存）
+    /// 列出指定 fid 目录的直接子项
     /// </summary>
     Task<List<QuarkFile>> ListChildrenAsync(string fid, CancellationToken ct = default);
 

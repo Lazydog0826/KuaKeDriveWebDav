@@ -9,7 +9,7 @@
 - **双数据源**：`/dav/kuake`（夸克网盘，只读）与 `/dav/local`（本地文件系统，可读写）各自独立路由。
 - **标准 WebDAV**：夸克路由支持 `OPTIONS / PROPFIND / GET / HEAD`；本地路由额外支持 `PUT / MKCOL / DELETE / MOVE / COPY`。
 - **登录态托管**：夸克 `QuarkClient` 以 Singleton 运行，跨请求维持登录态并持久化 Cookie 到磁盘；提供 `POST /api/quark/cookie` 接口热更新 Cookie。
-- **缓存优化**：目录列表与下载直链均经缓存（默认下载直链缓存 10 分钟，避免并发 Range 请求逐个回源）。
+- **缓存优化**：下载直链经缓存（默认 10 分钟，避免并发 Range 请求逐个回源）。
 - **Range 下载**：本地路由与夸克路由均支持 HTTP Range 请求，便于大文件分块下载与播放。
 - **容器化部署**：自包含镜像（net10.0 + alpine/musl），无运行时依赖；敏感配置通过 volume 挂载注入，不打入镜像。
 
@@ -63,7 +63,6 @@ docker build -t kuake-drive-webdav .
     "Quark": {
         "CookieFilePath": "cookie/quark-cookie.txt",
         "RootPath": "/",
-        "ListCacheMinutes": 2,
         "DownloadUrlCacheMinutes": 10
     },
     "WebDav": {
@@ -82,7 +81,6 @@ docker build -t kuake-drive-webdav .
 |---|---|---|---|
 | `Quark` | `CookieFilePath` | Cookie 持久化文件路径（相对当前工作目录） | `cookie/quark-cookie.txt` |
 | `Quark` | `RootPath` | 映射为 WebDAV 根的夸克路径 | `/` |
-| `Quark` | `ListCacheMinutes` | 目录列表缓存分钟数 | `2` |
 | `Quark` | `DownloadUrlCacheMinutes` | 下载直链缓存分钟数 | `10` |
 | `WebDav` | `QuarkPrefix` | 夸克路由前缀 | `/dav/kuake` |
 | `WebDav` | `LocalPrefix` | 本地路由前缀 | `/dav/local` |
@@ -125,7 +123,7 @@ dotnet build KuaKeDriveWebDav.sln
 
 - 目标框架 `net10.0`，需 .NET 10 SDK。
 - 项目配置未指定监听地址；若不传 `--urls` 且没有环境变量等外部配置，Kestrel 默认监听 `http://localhost:5000`。
-- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.9.0）之上，使用 `WebApplication` 显式创建宿主，并依赖其 `IHttpService` 与 Autofac 自动注册；缓存使用 ASP.NET Core 进程内内存缓存。
+- 项目运行在 [`SeventyTwo.InfraKit`](https://www.nuget.org/packages/SeventyTwo.InfraKit)（v10.9.0）之上，使用 `WebApplication` 显式创建宿主，并依赖其 `IHttpService` 与 Autofac 自动注册；下载直链缓存使用 ASP.NET Core 进程内内存缓存。
 - 本地运行前需准备 `cookie/quark-cookie.txt`（夸克登录态）与 `local-root/` 目录。
 
 ## 架构
@@ -137,7 +135,7 @@ dotnet build KuaKeDriveWebDav.sln
 ```
 
 - **`IWebDavStore`**（`WebDav/IWebDavStore.cs`）：数据源抽象，`WebDavMiddleware` 不直接依赖夸克。`WebDavNode`（record）统一节点模型，`WebDavCapabilities`（`Read` / `Write`）驱动 OPTIONS 的 `Allow` 头与写方法可用性，`WebDavStoreResolver` 按请求 `PathBase` 解析当前 store。
-- **`QuarkClient`**（`Quark/`）：Singleton，持有共享 `CookieContainer`，跨请求维持登录态。目录列表与下载直链经 `IMemoryCache` 缓存；直链失效时自动清缓存重取。
+- **`QuarkClient`**（`Quark/`）：Singleton，持有共享 `CookieContainer`，跨请求维持登录态。下载直链经 `IMemoryCache` 缓存；直链失效时自动清缓存重取。
 - **`LocalWebDavStore`**（`Local/`）：实现可读写 `IWebDavStore`，带路径越界校验（拒绝 `../`）、Range 解析与弱 ETag。
 
 ## 开源协议
