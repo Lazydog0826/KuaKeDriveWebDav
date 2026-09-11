@@ -25,11 +25,9 @@ builder.Services.AddMemoryCache();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHealthChecks();
 
-// Autofac 自动扫描注册标记了 [AutofacDependency] 的应用类型
-builder.Host.UseAutofac(containerBuilder =>
-{
-    containerBuilder.AutoAddDependency([.. typeof(AssemblyMark).Assembly.GetTypes()]);
-});
+// 自动扫描注册标记了 [AutofacDependency] 的应用类型（注册到原生服务集合，容器构建时由 Autofac 统一接管）
+builder.Services.AutoAddDependency([.. typeof(AssemblyMark).Assembly.GetTypes()]);
+builder.Host.UseAutofac();
 
 var app = builder.Build();
 var opt = app.Services.GetRequiredService<IOptions<WebDavOptions>>().Value;
