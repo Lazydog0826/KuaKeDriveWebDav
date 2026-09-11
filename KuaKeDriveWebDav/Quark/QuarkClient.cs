@@ -50,6 +50,10 @@ public class QuarkClient : IQuarkClient
 
     private string? _rootFid;
 
+    // 直链缓存 key 的版本号：Cookie 更新时递增使旧直链缓存整体失效，
+    // 避免新登录态继续复用可能已失效的下载直链
+    private int _downloadUrlKeyVersion;
+
     // 下载专用 HttpClient：底层 SocketsHttpHandler 绑定共享 CookieContainer，常驻复用连接池，
     // 避免 IHttpService 对带 Cookie 请求每次 new HttpClient 导致 TCP/TLS 重建与慢启动跑不满带宽。
     // 仅用于流式下载；列目录、取直链等小请求仍走 IHttpService。
@@ -268,36 +272,33 @@ public class QuarkClient : IQuarkClient
         cancellationToken.ThrowIfCancellationRequested();
         var load = _cacheLoads.GetOrAdd(
             key,
-            _ =>
-            {
-                Lazy<Task<object>> createdLoad = null!;
-                var load1 = createdLoad;
-                createdLoad = new Lazy<Task<object>>(
-                    async () =>
+            _ => new Lazy<Task<object>>(
+                async () =>
+                {
+                    try
                     {
-                        try
-                        {
-                            if (_memoryCache.TryGetValue(key, out T? current))
-                                return current!;
-                            var created = await factory();
-                            _memoryCache.Set(key, created, expiration);
-                            return created;
-                        }
-                        finally
-                        {
-                            _cacheLoads.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, load1));
-                        }
-                    },
-                    LazyThreadSafetyMode.ExecutionAndPublication
-                );
-                return createdLoad;
-            }
+                        if (_memoryCache.TryGetValue(key, out T? current))
+                            return current!;
+                        var created = await factory();
+                        _memoryCache.Set(key, created, expiration);
+                        return created;
+                    }
+                    finally
+                    {
+                        // 加载完成后必须按 key 移除：否则已完成的任务永久滞留，
+                        // 缓存被清后 GetOrAdd 仍返回旧结果，导致失效直链无法回源重取。
+                        // 每个 key 同时至多存在一个加载任务，按 key 清理即可，无需按值精确匹配
+                        _cacheLoads.TryRemove(key, out var _);
+                    }
+                },
+                LazyThreadSafetyMode.ExecutionAndPublication
+            )
         );
         return (T)await load.Value.WaitAsync(cancellationToken);
     }
 
-    /// <summary>直链缓存 key</summary>
-    private string DownloadUrlKey(string fid) => $"quark:dl:{fid}";
+    /// <summary>直链缓存 key（含 Cookie 版本号：Cookie 更新后换代，旧直链立即失效不再复用）</summary>
+    private string DownloadUrlKey(string fid) => $"quark:dl:{_downloadUrlKeyVersion}:{fid}";
 
     /// <summary>
     /// 用直链发起流式下载：经共享 CookieContainer 的常驻 HttpClient 复用连接池，Cookie 由 handler 按 URL 域自动注入。
@@ -434,8 +435,8 @@ public class QuarkClient : IQuarkClient
             _lastSavedCookie = GetCurrentCookieString();
             await File.WriteAllTextAsync(_cookieFile, _lastSavedCookie, ct);
             _rootFid = null; // 清除根 fid 缓存，确保后续按新登录态重新解析
+            _downloadUrlKeyVersion++; // 直链缓存 key 换代，旧直链缓存立即失效，不再依赖失败重试自愈
             _httpClient = CreateHttpClient(); // 重建下载客户端以绑定新 Cookie 容器（旧 client 交由 GC 回收）
-            // 直链缓存（quark:dl:*）依赖 TTL 与 OpenDownloadAsync 失败重试自愈
             _logger.LogInformation("夸克 Cookie 已更新，下载客户端已重建");
         }
         finally
